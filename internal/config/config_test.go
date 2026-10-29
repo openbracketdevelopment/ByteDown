@@ -27,7 +27,7 @@ func TestRejectInvalid(t *testing.T) {
 	for _, tc := range []struct{ k, v string }{
 		{"API_KEY", "short"}, {"DATABASE_URL", ""}, {"MAX_UPLOAD_BYTES", "-1"},
 		{"PROCESS_TIMEOUT", "0s"}, {"WORKER_CONCURRENCY", "65"},
-		{"PUBLIC_VARIANTS", "yes"}, {"CORS_ORIGINS", "*"}, {"CORS_ORIGINS", "https://example.com/path"},
+		{"PUBLIC_VARIANTS", "yes"}, {"PUBLIC_VARIANTS", "null"}, {"CORS_ORIGINS", "*"}, {"CORS_ORIGINS", "https://example.com/path"},
 		{"PROFILES_JSON", `{"web":{"widths":[480],"formats":["gif"]}}`},
 		{"PROFILES_JSON", `{}`},
 	} {

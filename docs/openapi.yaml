@@ -51,7 +51,7 @@ paths:
                     items: {enum: [jpeg, png]}
                   formats:
                     type: array
-                    items: {type: object}
+                    items: {$ref: '#/components/schemas/Capability'}
                   profiles:
                     type: object
                     additionalProperties: {$ref: '#/components/schemas/Profile'}
@@ -235,6 +235,30 @@ components:
                   code: {type: string}
                   message: {type: string}
   schemas:
+    Capability:
+      type: object
+      properties:
+        format: {enum: [jpeg, png, webp, avif]}
+        identifier: {type: string}
+        extension: {type: string}
+        mime: {type: string}
+        transparency: {type: boolean}
+        input: {type: boolean}
+        output: {type: boolean}
+        available:
+          type: boolean
+          description: Required format; startup smoke probe must succeed before the API is served
+        options:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              minimum: {type: integer}
+              maximum: {type: integer}
+              default: {type: integer}
+              fixed: {type: boolean}
+              description: {type: string}
     Profile:
       type: object
       required: [widths, formats, include_source, jpeg_quality, webp_quality, webp_effort, avif_quality, avif_effort]

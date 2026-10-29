@@ -14,36 +14,69 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/openbracketdevelopment/ByteDown/internal/model"
 )
 
-// Capability describes a format supported by the actual installed codecs.
+// Capability describes a format supported by the processing policy. Probe
+// separately verifies that the installed native codecs implement that policy.
 type Capability struct {
-	Format    string `json:"format"`
-	Input     bool   `json:"input"`
-	Output    bool   `json:"output"`
-	Available bool   `json:"available"`
+	Format       string          `json:"format"`
+	Identifier   string          `json:"identifier"`
+	Extension    string          `json:"extension"`
+	MIME         string          `json:"mime"`
+	Transparency bool            `json:"transparency"`
+	Input        bool            `json:"input"`
+	Output       bool            `json:"output"`
+	Options      []EncoderOption `json:"options"`
+	Available    bool            `json:"available"`
+}
+
+// EncoderOption describes an integer encoder parameter or fixed encoder policy.
+type EncoderOption struct {
+	Name        string `json:"name"`
+	Minimum     int    `json:"minimum"`
+	Maximum     int    `json:"maximum"`
+	Default     int    `json:"default"`
+	Fixed       bool   `json:"fixed,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 var (
-	startOnce    sync.Once
-	startErr     error
-	probeOnce    sync.Once
-	probeErr     error
-	capabilities []Capability
+	startOnce sync.Once
+	startErr  error
+	probeOnce sync.Once
+	probeErr  error
 )
 
 func startup() error {
 	startOnce.Do(func() {
+		concurrency, err := nativeConcurrency()
+		if err != nil {
+			startErr = err
+			return
+		}
 		vips.LoggingSettings(nil, vips.LogLevelWarning)
 		startErr = vips.Startup(&vips.Config{
-			ConcurrencyLevel: 1, MaxCacheMem: 1, MaxCacheSize: 0, MaxCacheFiles: 0,
+			ConcurrencyLevel: concurrency, MaxCacheMem: 1, MaxCacheSize: 0, MaxCacheFiles: 0,
 		})
 	})
 	return startErr
+}
+
+func nativeConcurrency() (int, error) {
+	raw, configured := os.LookupEnv("VIPS_CONCURRENCY")
+	if !configured {
+		return 1, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 16 {
+		return 0, errors.New("VIPS_CONCURRENCY must be an integer from 1 to 16")
+	}
+	return value, nil
 }
 
 func limitsWithDefaults(l model.Limits) (model.Limits, error) {
@@ -124,6 +157,7 @@ func readInput(path string, l model.Limits) ([]byte, model.Input, error) {
 		return nil, input, err
 	}
 	input.Width, input.Height, input.Bytes = config.Width, config.Height, int64(len(data))
+	input.EncodedWidth, input.EncodedHeight = config.Width, config.Height
 	return data, input, nil
 }
 
@@ -439,10 +473,12 @@ func encode(ref *vips.ImageRef, format string, p model.Profile) ([]byte, error) 
 	case "jpeg":
 		opts := vips.NewJpegExportParams()
 		opts.Quality, opts.StripMetadata = p.JPEGQuality, true
+		opts.OptimizeCoding = true
 		data, _, err = ref.ExportJpeg(opts)
 	case "png":
 		opts := vips.NewPngExportParams()
 		opts.StripMetadata = true
+		opts.Compression, opts.Palette = 9, false
 		data, _, err = ref.ExportPng(opts)
 	case "webp":
 		opts := vips.NewWebpExportParams()
@@ -459,6 +495,23 @@ func encode(ref *vips.ImageRef, format string, p model.Profile) ([]byte, error) 
 		err = errors.New("encoder returned no bytes")
 	}
 	return data, err
+}
+
+// OutputFilename is the canonical child/worker filename contract. It does not
+// initialize libvips and rejects unsupported formats and invalid dimensions.
+func OutputFilename(format string, width int) (string, error) {
+	if width <= 0 {
+		return "", errors.New("invalid output width")
+	}
+	extension := format
+	switch format {
+	case "jpeg":
+		extension = "jpg"
+	case "png", "webp", "avif":
+	default:
+		return "", errors.New("unsupported output format")
+	}
+	return fmt.Sprintf("%s-%d.%s", format, width, extension), nil
 }
 
 // Process generates each output directly from one oriented, color-normalized,
@@ -526,14 +579,21 @@ func Process(task model.Task) (outputs []model.Output, err error) {
 		if int64(len(data)) > limits.OutputBytes-total {
 			return errors.New("aggregate output bytes exceed limit")
 		}
-		name := fmt.Sprintf("%s-%d", format, width)
-		path := filepath.Join(task.OutputDir, name+"."+format)
+		name := fmt.Sprintf("%s-%d", format, ref.Width())
+		filename, e := OutputFilename(format, ref.Width())
+		if e != nil {
+			return e
+		}
+		path := filepath.Join(task.OutputDir, filename)
 		file, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if e != nil {
 			return e
 		}
 		created = append(created, path)
 		_, e = file.Write(data)
+		if e == nil {
+			e = file.Sync()
+		}
 		closeErr := file.Close()
 		if e != nil {
 			return e
@@ -545,7 +605,7 @@ func Process(task model.Task) (outputs []model.Output, err error) {
 		outputs = append(outputs, model.Output{
 			ID: name, Format: format, Width: ref.Width(), Height: ref.Height(),
 			Bytes: int64(len(data)), Path: path,
-			SizeDifferencePercent: 100 * (float64(len(data))/float64(input.Bytes) - 1),
+			SizeDifferencePercent: 100 * (1 - float64(len(data))/float64(input.Bytes)),
 			Smaller:               int64(len(data)) < input.Bytes,
 			IncludesResizing:      ref.Width() != input.Width || ref.Height() != input.Height,
 		})
@@ -561,7 +621,22 @@ func Process(task model.Task) (outputs []model.Output, err error) {
 			}
 		}
 	}
+	if err = syncDirectory(task.OutputDir); err != nil {
+		return nil, err
+	}
+	if err = syncDirectory(filepath.Dir(filepath.Clean(task.OutputDir))); err != nil {
+		return nil, err
+	}
 	return outputs, nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 // Probe performs actual encode-and-full-decode checks for every required format,
@@ -580,7 +655,6 @@ func Probe() error {
 		defer ref.Close()
 		profile, _ := checkedProfile(model.Profile{})
 		for _, format := range []string{"jpeg", "png", "webp", "avif"} {
-			capability := Capability{Format: format, Input: format == "jpeg" || format == "png", Output: true}
 			data, e := encode(ref, format, profile)
 			if e == nil {
 				var decoded *vips.ImageRef
@@ -595,8 +669,6 @@ func Probe() error {
 					decoded.Close()
 				}
 			}
-			capability.Available = e == nil
-			capabilities = append(capabilities, capability)
 			if e != nil {
 				probeErr = errors.Join(probeErr, fmt.Errorf("%s codec smoke test: %w", format, e))
 			}
@@ -605,8 +677,35 @@ func Probe() error {
 	return probeErr
 }
 
-// Formats returns a detached copy of the probed capabilities.
+// Formats describes supported formats without initializing native libraries.
+// It is safe to call in the API parent; run Probe in a child to check availability.
+// Available is the registry declaration, valid only after that probe succeeds.
 func Formats() []Capability {
-	_ = Probe()
-	return slices.Clone(capabilities)
+	return []Capability{
+		{Format: "jpeg", Identifier: "jpeg", Extension: "jpg", MIME: "image/jpeg",
+			Input: true, Output: true, Available: true,
+			Options: []EncoderOption{
+				{Name: "quality", Minimum: 1, Maximum: 100, Default: 82},
+				{Name: "optimize_coding", Minimum: 1, Maximum: 1, Default: 1, Fixed: true,
+					Description: "Huffman optimization is always enabled; JPEG exposes no numeric effort control."},
+			}},
+		{Format: "png", Identifier: "png", Extension: "png", MIME: "image/png",
+			Transparency: true, Input: true, Output: true, Available: true,
+			Options: []EncoderOption{
+				{Name: "compression", Minimum: 9, Maximum: 9, Default: 9, Fixed: true,
+					Description: "Lossless DEFLATE level 9; palette quantization is disabled."},
+			}},
+		{Format: "webp", Identifier: "webp", Extension: "webp", MIME: "image/webp",
+			Transparency: true, Output: true, Available: true,
+			Options: []EncoderOption{
+				{Name: "quality", Minimum: 1, Maximum: 100, Default: 80},
+				{Name: "effort", Minimum: 0, Maximum: 6, Default: 4},
+			}},
+		{Format: "avif", Identifier: "avif", Extension: "avif", MIME: "image/avif",
+			Transparency: true, Output: true, Available: true,
+			Options: []EncoderOption{
+				{Name: "quality", Minimum: 1, Maximum: 100, Default: 50},
+				{Name: "effort", Minimum: 0, Maximum: 9, Default: 4},
+			}},
+	}
 }

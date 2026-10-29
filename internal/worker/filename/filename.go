@@ -8,12 +8,16 @@ import (
 
 func For(format string, width int) (string, error) {
 	switch format {
-	case "jpeg", "png", "webp", "avif", "gif":
+	case "jpeg", "png", "webp", "avif":
 	default:
 		return "", errors.New("invalid output format")
 	}
 	if width < 1 {
 		return "", errors.New("invalid output width")
 	}
-	return fmt.Sprintf("%s-%d.%s", format, width, format), nil
+	extension := format
+	if format == "jpeg" {
+		extension = "jpg"
+	}
+	return fmt.Sprintf("%s-%d.%s", format, width, extension), nil
 }

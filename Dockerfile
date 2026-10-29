@@ -1,6 +1,7 @@
 FROM golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73 AS build
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libvips-dev pkg-config \
+    && apt-get install -y --no-install-recommends \
+        libvips-dev liblcms2-dev pkg-config libheif-plugin-aomenc libheif-plugin-aomdec \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -19,7 +20,8 @@ RUN mkdir -p /out/licenses \
 
 FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libvips42t64 \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates libvips42t64 libheif-plugin-aomenc libheif-plugin-aomdec \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 bytedown \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin bytedown \

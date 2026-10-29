@@ -18,8 +18,8 @@ jobs:
         image: postgres:17.11-trixie@sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f
         env:
           POSTGRES_USER: bytedown
-          POSTGRES_PASSWORD: ci-only-not-a-production-password
           POSTGRES_DB: bytedown_test
+          # Isolated disposable CI service, never a deployment setting.
           POSTGRES_HOST_AUTH_METHOD: trust
         options: >-
           --health-cmd "pg_isready -U bytedown -d bytedown_test"
@@ -35,7 +35,7 @@ jobs:
       - name: Install native dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends libvips-dev pkg-config
+          apt-get install -y --no-install-recommends libvips-dev liblcms2-dev pkg-config libheif-plugin-aomenc libheif-plugin-aomdec
       - run: go test ./...
       - run: go vet ./...
   docker:

@@ -71,3 +71,19 @@ immutable executable/native-library installation.
 
 Use a TLS reverse proxy, keep PostgreSQL private, and never log secrets or image
 metadata. This release serves trusted applications, not hostile public uploaders.
+
+## Verified implementation references
+
+- [Go 1.25 net/http](https://pkg.go.dev/net/http@go1.25.0#ServeMux):
+  method/path patterns and request path values avoid a router dependency.
+- [pgx v5 pool API](https://pkg.go.dev/github.com/jackc/pgx/v5/pgxpool):
+  explicit transactions are rolled back on all non-commit paths.
+- [PostgreSQL 17 SELECT documentation source](https://github.com/postgres/postgres/blob/REL_17_STABLE/doc/src/sgml/ref/select.sgml):
+  `FOR UPDATE SKIP LOCKED` supports competing consumers of queue-like tables.
+- [govips v2.20.0 source](https://github.com/davidbyttow/govips/tree/v2.20.0/vips):
+  export APIs and format-specific options are checked against the pinned source.
+  The small native adapter deliberately uses documented libvips strict loader
+  and ICC-transform operations where the Go wrapper lacks the required controls.
+- [libvips color operations](https://www.libvips.org/API/current/libvips-colour.html)
+  and [foreign loaders/savers](https://www.libvips.org/API/current/libvips-foreign.html):
+  availability depends on the system build, so startup tests real encoders.

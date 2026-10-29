@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -108,19 +109,31 @@ func pause(ctx context.Context, d time.Duration) bool {
 }
 
 type boundedBuffer struct {
-	bytes.Buffer
-	limit int
+	buffer   bytes.Buffer
+	limit    int
+	overflow bool
+	cancel   context.CancelFunc
 }
+
+func (b *boundedBuffer) Bytes() []byte { return b.buffer.Bytes() }
+func (b *boundedBuffer) Len() int      { return b.buffer.Len() }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
-	if b.Len() < b.limit {
-		remaining := b.limit - b.Len()
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = b.Buffer.Write(p)
+	remaining := b.limit - b.Len()
+	if remaining < 0 {
+		remaining = 0
 	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		if !b.overflow {
+			b.overflow = true
+			if b.cancel != nil {
+				b.cancel()
+			}
+		}
+	}
+	_, _ = b.buffer.Write(p)
 	return n, nil
 }
 
@@ -128,27 +141,6 @@ func process(ctx context.Context, db *store.Store, root, executable string, limi
 	start := time.Now()
 	runCtx, cancel := context.WithTimeout(ctx, limits.Duration)
 	defer cancel()
-	heartbeatDone := make(chan struct{})
-	defer func() { cancel(); <-heartbeatDone }()
-	go func() {
-		defer close(heartbeatDone)
-		ticker := time.NewTicker(leaseDuration / 3)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-runCtx.Done():
-				return
-			case <-ticker.C:
-				beatCtx, beatCancel := context.WithTimeout(runCtx, leaseDuration/3)
-				e := db.Heartbeat(beatCtx, job.ID, job.Token, leaseDuration)
-				beatCancel()
-				if e != nil {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
 	fail := func(code, message string, retry bool) {
 		if ctx.Err() != nil {
 			return
@@ -172,6 +164,33 @@ func process(ctx context.Context, db *store.Store, root, executable string, limi
 		fail("storage_error", "Cannot create processing directory", true)
 		return
 	}
+	heartbeatDone := make(chan struct{})
+	defer func() { cancel(); <-heartbeatDone }()
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(leaseDuration / 3)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				beatCtx, beatCancel := context.WithTimeout(runCtx, leaseDuration/3)
+				e := db.Heartbeat(beatCtx, job.ID, job.Token, leaseDuration)
+				if e == nil {
+					count, countErr := countStaged(stage)
+					if countErr == nil {
+						e = db.Progress(beatCtx, job.ID, job.Token, count)
+					}
+				}
+				beatCancel()
+				if e != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	task := model.Task{InputPath: filepath.Join(root, "originals", job.ImageID), OutputDir: stage, Profile: job.Profile, Limits: limits}
 	payload, err := json.Marshal(task)
 	if err != nil {
@@ -180,11 +199,15 @@ func process(ctx context.Context, db *store.Store, root, executable string, limi
 	}
 	cmd := exec.CommandContext(runCtx, executable, "process")
 	cmd.Stdin = bytes.NewReader(payload)
-	stdout := &boundedBuffer{limit: 2 << 20}
+	stdout := &boundedBuffer{limit: 2 << 20, cancel: cancel}
 	stderr := &boundedBuffer{limit: 4096}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err = cmd.Run()
+	if stdout.overflow {
+		fail("processor_protocol", "Processor response limit exceeded", false)
+		return
+	}
 	if err != nil {
 		switch {
 		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
@@ -193,7 +216,7 @@ func process(ctx context.Context, db *store.Store, root, executable string, limi
 			return
 		default:
 			var exit *exec.ExitError
-			retry := !errors.As(err, &exit) || exit.ExitCode() < 0
+			retry := !errors.As(err, &exit) || exit.ExitCode() < 0 || exit.ExitCode() == 75
 			code, message := "processing_failed", "Image processor failed"
 			if retry {
 				code, message = "processor_unavailable", "Image processor unavailable"
@@ -224,7 +247,7 @@ func process(ctx context.Context, db *store.Store, root, executable string, limi
 		info, e := os.Lstat(filepath.Join(stage, name))
 		if errors.Is(e, fs.ErrNotExist) && out.Format == "jpeg" {
 			// Both conventional JPEG extensions are deterministic, never processor-supplied paths.
-			name = fmt.Sprintf("jpeg-%d.jpg", out.Width)
+			name = fmt.Sprintf("jpeg-%d.jpeg", out.Width)
 			info, e = os.Lstat(filepath.Join(stage, name))
 		}
 		if e != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() != out.Bytes || out.Height < 1 {
@@ -288,6 +311,43 @@ func component(value string) bool {
 
 func outputName(out model.Output) (string, error) {
 	return filename.For(out.Format, out.Width)
+}
+
+func countStaged(directory string) (int, error) {
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		format, suffix, ok := strings.Cut(entry.Name(), "-")
+		if !ok {
+			continue
+		}
+		widthString, _, ok := strings.Cut(suffix, ".")
+		if !ok {
+			continue
+		}
+		width, err := strconv.Atoi(widthString)
+		if err != nil {
+			continue
+		}
+		name, err := filename.For(format, width)
+		if err != nil || name != entry.Name() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return 0, err
+		}
+		if info.Mode().IsRegular() && info.Size() > 0 {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // Reconcile only removes old, unreferenced attempts. Database errors fail closed.

@@ -112,7 +112,7 @@ Debian 12's older native library is not the supported build environment here.
 ```bash
 # On Debian 13, as a user allowed to install packages:
 sudo apt-get update
-sudo apt-get install -y build-essential pkg-config libvips-dev
+sudo apt-get install -y build-essential pkg-config libvips-dev liblcms2-dev libheif-plugin-aomenc libheif-plugin-aomdec
 go test ./...
 go vet ./...
 # Against a dedicated, disposable PostgreSQL test database:
@@ -120,6 +120,7 @@ TEST_DATABASE_URL='postgres://bytedown@localhost:5432/bytedown_test?sslmode=disa
 docker build -t bytedown:local .
 docker run --rm bytedown:local probe
 node examples/test-examples.mjs
+bash examples/test-live.sh # full native checks + isolated Compose acceptance; port 8080 must be free
 ```
 
 Use your database's password/TLS settings in `TEST_DATABASE_URL`; it must never

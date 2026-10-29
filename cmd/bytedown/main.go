@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -58,12 +60,9 @@ func run() error {
 		command = os.Args[1]
 	}
 	if command == "healthcheck" {
-		addr := os.Getenv("LISTEN_ADDR")
-		if addr == "" || strings.HasPrefix(addr, ":") {
-			addr = "127.0.0.1" + addr
-			if addr == "127.0.0.1" {
-				addr += ":8080"
-			}
+		addr, err := healthAddress(os.Getenv("LISTEN_ADDR"))
+		if err != nil {
+			return err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -161,7 +160,26 @@ func run() error {
 	}
 }
 
+func healthAddress(address string) (string, error) {
+	if address == "" {
+		address = ":8080"
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", err
+	}
+	if host == "" || host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	if host == "::" {
+		host = "::1"
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
 func child(ctx context.Context, executable, command string, input, output any) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, command)
 	if input != nil {
 		b, e := json.Marshal(input)
@@ -171,18 +189,35 @@ func child(ctx context.Context, executable, command string, input, output any) e
 		cmd.Stdin = strings.NewReader(string(b))
 	}
 	// Never forward codec diagnostics (which may contain metadata) to logs.
-	b, e := cmd.Output()
+	buffer := &boundedOutput{limit: 1 << 20, cancel: cancel}
+	cmd.Stdout = buffer
+	cmd.Stderr = io.Discard
+	e := cmd.Run()
 	if e != nil {
 		return fmt.Errorf("processing child failed: %w", ctxOrError(ctx, e))
 	}
-	if len(b) > 1<<20 {
-		return errors.New("child response limit exceeded")
-	}
 	if output != nil {
-		return json.Unmarshal(b, output)
+		return json.Unmarshal(buffer.Bytes(), output)
 	}
 	return nil
 }
+
+type boundedOutput struct {
+	buffer bytes.Buffer
+	limit  int
+	cancel context.CancelFunc
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	if len(p) > b.limit-b.buffer.Len() {
+		b.cancel()
+		return 0, errors.New("child response limit exceeded")
+	}
+	return b.buffer.Write(p)
+}
+
+func (b *boundedOutput) Bytes() []byte { return b.buffer.Bytes() }
+func (b *boundedOutput) Len() int      { return b.buffer.Len() }
 func ctxOrError(ctx context.Context, e error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()

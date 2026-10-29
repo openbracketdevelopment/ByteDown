@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -134,6 +135,17 @@ func TestRecoveryPublicationAndDeletionFencing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = db.Progress(ctx, first.ID, first.Token, 99); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := db.Job(ctx, first.ID)
+	if err != nil || progress.Generated != progress.Planned {
+		t.Fatalf("progress was not bounded: %+v %v", progress, err)
+	}
+	partial, err := db.Image(ctx, first.ImageID)
+	if err != nil || len(partial.Outputs) != 0 {
+		t.Fatalf("partial manifest became visible: %+v %v", partial, err)
+	}
 	if _, err = db.pool.Exec(ctx, "UPDATE jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE id='job'"); err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +153,11 @@ func TestRecoveryPublicationAndDeletionFencing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Token == first.Token || second.Attempt != 2 {
+	if second.Token == first.Token || second.Attempt != 2 || second.Generated != 0 {
 		t.Fatal("recovery did not fence the old attempt")
+	}
+	if err = db.Progress(ctx, first.ID, first.Token, 1); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("old progress update: %v", err)
 	}
 	if err = db.Heartbeat(ctx, first.ID, first.Token, time.Minute); !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("old heartbeat: %v", err)
@@ -150,6 +165,12 @@ func TestRecoveryPublicationAndDeletionFencing(t *testing.T) {
 	out := model.Output{ID: "output", Path: "outputs/" + second.Token + "/jpeg-480.jpg", Format: "jpeg", Width: 480, Height: 320, Bytes: 60, URL: "/media/output"}
 	if err = db.Publish(ctx, first, []model.Output{out}, time.Second); !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("old publish: %v", err)
+	}
+	if err = db.Publish(ctx, second, nil, time.Second); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("incomplete publication: %v", err)
+	}
+	if err = db.Publish(ctx, second, []model.Output{out, out}, time.Second); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("excess publication: %v", err)
 	}
 	if err = db.Publish(ctx, second, []model.Output{out}, time.Second); err != nil {
 		t.Fatal(err)
@@ -224,6 +245,9 @@ func TestTransientFailureRetry(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		if err = db.Progress(ctx, job.ID, job.Token, 1); err != nil {
+			t.Fatal(err)
+		}
 		if err = db.Fail(ctx, job.ID, job.Token, "storage_error", "retry", time.Second, true); err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +256,7 @@ func TestTransientFailureRetry(t *testing.T) {
 			t.Fatal(err)
 		}
 		if i < 3 {
-			if got.Status != "queued" {
+			if got.Status != "queued" || got.Generated != 0 {
 				t.Fatalf("not queued: %+v", got)
 			}
 			if _, err = db.pool.Exec(ctx, "UPDATE jobs SET available_at=clock_timestamp()"); err != nil {
@@ -298,5 +322,37 @@ func TestConcurrentDeleteAndPublication(t *testing.T) {
 		if _, e := db.Asset(ctx, fmt.Sprintf("out-%d", i)); !errors.Is(e, ErrNotFound) {
 			t.Fatalf("deleted output survived: %v", e)
 		}
+	}
+}
+
+func TestOutputsOwnershipIndex(t *testing.T) {
+	db := testStore(t)
+	ctx := context.Background()
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, "SET LOCAL enable_seqscan=off"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query(ctx, "EXPLAIN SELECT 1 FROM outputs WHERE split_part(path,'/',2)=$1", "attempt-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	indexed := false
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		indexed = indexed || strings.Contains(line, "outputs_attempt_token")
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !indexed {
+		t.Fatal("attempt ownership lookup has no usable expression index")
 	}
 }

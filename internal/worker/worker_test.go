@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,16 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		if os.Getenv("BYTEDOWN_TEST_PROCESS") == "hang" {
+			time.Sleep(time.Minute)
+			os.Exit(1)
+		}
+		switch os.Getenv("BYTEDOWN_TEST_PROCESS") {
+		case "exit75":
+			os.Exit(75)
+		case "exit1":
+			os.Exit(1)
+		case "overflow":
+			_, _ = io.WriteString(os.Stdout, strings.Repeat("x", 3<<20))
 			time.Sleep(time.Minute)
 			os.Exit(1)
 		}
@@ -208,11 +219,11 @@ func TestReconcileRespectsOwnershipAndGrace(t *testing.T) {
 
 func TestOutputNames(t *testing.T) {
 	name, err := outputName(model.Output{Format: "jpeg", Width: 480})
-	if err != nil || name != "jpeg-480.jpeg" {
+	if err != nil || name != "jpeg-480.jpg" {
 		t.Fatalf("bad filename %q %v", name, err)
 	}
 
-	for _, out := range []model.Output{{Format: "../jpeg", Width: 480}, {Format: "jpeg", Width: 0}} {
+	for _, out := range []model.Output{{Format: "../jpeg", Width: 480}, {Format: "jpeg", Width: 0}, {Format: "gif", Width: 480}} {
 		if _, err = outputName(out); err == nil {
 			t.Fatalf("accepted unsafe metadata: %+v", out)
 		}
@@ -239,5 +250,117 @@ func TestUnavailablePipelineFailsWithoutExecuting(t *testing.T) {
 	got, err := db.Job(context.Background(), job.ID)
 	if err != nil || got.Status != "failed" || got.ErrorCode != "pipeline_unavailable" {
 		t.Fatalf("unavailable pipeline executed or retried: %+v %v", got, err)
+	}
+}
+
+func TestCountStagedOnlyCanonicalRegularOutputs(t *testing.T) {
+	root := workerRoot(t)
+	directory := filepath.Join(root, "staging")
+	for _, name := range []string{"jpeg-480.jpeg", "webp-480.webp", "avif-480.avif", "jpeg-480.jpg", "jpeg-0.jpeg", "notes", "jpeg-480.jpeg.partial"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("output"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(directory, "png-480.png"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(directory, "webp-960.webp"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(directory, "jpeg-480.jpeg"), filepath.Join(directory, "jpeg-960.jpeg")); err != nil {
+		t.Fatal(err)
+	}
+	count, err := countStaged(directory)
+	if err != nil || count != 3 {
+		t.Fatalf("counted non-output staging entries: %d %v", count, err)
+	}
+}
+
+func TestIncompleteManifestCannotPublish(t *testing.T) {
+	t.Setenv("BYTEDOWN_TEST_PROCESS", "success")
+	db := workerStore(t)
+	root := workerRoot(t)
+	ctx := context.Background()
+	_, _, _, err := db.Accept(ctx, "image", "job", "hash", "", model.Input{Format: "jpeg"}, model.Profile{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := db.Claim(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	process(ctx, db, root, executable, model.Limits{Duration: 5 * time.Second, OutputCount: 3, OutputBytes: 1024}, job)
+	got, err := db.Job(ctx, job.ID)
+	if err != nil || got.Status != "failed" || got.ErrorCode != "processor_protocol" {
+		t.Fatalf("partial manifest succeeded: %+v %v", got, err)
+	}
+	image, err := db.Image(ctx, job.ImageID)
+	if err != nil || len(image.Outputs) != 0 {
+		t.Fatalf("partial manifest exposed: %+v %v", image, err)
+	}
+}
+
+func TestChildFailureClassification(t *testing.T) {
+	for _, mode := range []string{"exit75", "exit1"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("BYTEDOWN_TEST_PROCESS", mode)
+			db := workerStore(t)
+			root := workerRoot(t)
+			job := workerJob(t, db)
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			process(context.Background(), db, root, executable, model.Limits{Duration: 5 * time.Second, OutputCount: 1, OutputBytes: 1024}, job)
+			got, err := db.Job(context.Background(), job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "exit75" {
+				if got.Status != "queued" || got.ErrorCode != "processor_unavailable" {
+					t.Fatalf("storage I/O failure was not retryable: %+v", got)
+				}
+			} else if got.Status != "failed" || got.ErrorCode != "processing_failed" {
+				t.Fatalf("permanent failure was retried: %+v", got)
+			}
+		})
+	}
+}
+
+func TestBoundedBufferIOCopyCannotBypassLimit(t *testing.T) {
+	cancelled := false
+	buffer := &boundedBuffer{limit: 32, cancel: func() { cancelled = true }}
+	if _, ok := any(buffer).(io.ReaderFrom); ok {
+		t.Fatal("bounded buffer must not expose ReaderFrom")
+	}
+	// LimitReader hides the source's WriterTo, exercising io.Copy's destination fast path.
+	source := io.LimitReader(strings.NewReader(strings.Repeat("x", 4096)), 4096)
+	n, err := io.Copy(buffer, source)
+	if err != nil || n != 4096 {
+		t.Fatalf("copy: %d %v", n, err)
+	}
+	if buffer.Len() != 32 || len(buffer.Bytes()) != 32 || !buffer.overflow || !cancelled {
+		t.Fatalf("buffer limit bypassed: length=%d overflow=%v cancelled=%v", buffer.Len(), buffer.overflow, cancelled)
+	}
+}
+
+func TestProcessorOutputOverflowTerminatesChild(t *testing.T) {
+	t.Setenv("BYTEDOWN_TEST_PROCESS", "overflow")
+	db := workerStore(t)
+	root := workerRoot(t)
+	job := workerJob(t, db)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	process(context.Background(), db, root, executable, model.Limits{Duration: 5 * time.Second, OutputCount: 1, OutputBytes: 1024}, job)
+	got, err := db.Job(context.Background(), job.ID)
+	if err != nil || got.Status != "failed" || got.ErrorCode != "processor_protocol" || time.Since(start) > 3*time.Second {
+		t.Fatalf("overflow did not terminate child promptly: %+v %v", got, err)
 	}
 }

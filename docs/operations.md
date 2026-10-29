@@ -33,6 +33,12 @@ Debian release to avoid native ABI mismatch. Apt security revisions are not
 pinned: preserve the final built image digest for reproducible deployments.
 The `probe` command checks actual native encoders, rather than assuming a
 package name proves AVIF/WebP availability.
+AVIF requires libheif codec plugins: both Docker stages explicitly install
+[`libheif-plugin-aomenc`](https://packages.debian.org/trixie/libheif-plugin-aomenc)
+and [`libheif-plugin-aomdec`](https://packages.debian.org/trixie/libheif-plugin-aomdec).
+Installing libvips alone with `--no-install-recommends` does not provide an AVIF
+encoder. `liblcms2-dev` is explicitly installed for the native color-management
+bridge at build time; its shared runtime dependency is supplied by libvips.
 
 ## Startup and monitoring
 

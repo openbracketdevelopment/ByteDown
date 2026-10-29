@@ -32,7 +32,8 @@ func normalize(data []byte, format string) (*vips.ImageRef, error) {
 	if result.length > 1<<31-1 {
 		return nil, fmt.Errorf("normalized raster is too large")
 	}
-	pixels := C.GoBytes(result.pixels, C.int(result.length))
+	// NewImageFromMemory makes its own native copy before this buffer is freed.
+	pixels := unsafe.Slice((*byte)(result.pixels), int(result.length))
 	return vips.NewImageFromMemory(pixels, int(result.width), int(result.height),
 		int(result.bands), vips.BandFormatUchar, vips.InterpretationSRGB)
 }

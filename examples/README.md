@@ -11,6 +11,7 @@ bash examples/demo.sh path/to/photo.png
 node examples/upload.mjs path/to/photo.jpg # Node 20+, no npm dependencies
 bash examples/benchmark.sh path/to/photo.jpg
 node examples/test-examples.mjs            # mock HTTP contract, not encoder acceptance
+bash examples/test-live.sh                 # full native Go checks + disposable live Compose test
 ```
 
 `demo.sh` verifies original equality, downloaded lengths, Content-Type and
@@ -19,6 +20,12 @@ downloads; native Go tests must cover decoding. Use representative photographs,
 alpha PNGs and synthetic graphics for actual quality/size measurements.
 `RESULTS_DIR` overrides the output location. Results contain private media and
 URLs; do not commit them. Delete local results after evaluation.
+The live test requires localhost port 8080 to be free and OpenSSL. It builds
+images, runs full Go tests/vet against its disposable PostgreSQL, tests real
+PNG/JPEG processing, private access, deletion and a deliberately failed job,
+then destroys only its uniquely named project's containers and volumes.
+It writes evidence to `examples/live-results/`; the tiny owned fixtures are
+correctness cases, not a representative compression benchmark.
 
 ## Next.js App Router (scoped snippets)
 

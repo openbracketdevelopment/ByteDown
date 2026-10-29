@@ -201,3 +201,22 @@ func TestDownloadRangeErrorIsJSON(t *testing.T) {
 		t.Fatalf("invalid range error: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestExplicitCORSAllowlist(t *testing.T) {
+	_, db, c := setup(t, false)
+	c.Origins = []string{"https://trusted.example"}
+	h := New(c, db, nil, nil)
+	for _, origin := range []string{"https://trusted.example", "https://other.example"} {
+		r := httptest.NewRequest("OPTIONS", "/v1/images", nil)
+		r.Header.Set("Origin", origin)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if origin == c.Origins[0] {
+			if w.Code != 204 || w.Header().Get("Access-Control-Allow-Origin") != origin {
+				t.Fatal("configured origin not allowed")
+			}
+		} else if w.Code != 403 || w.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Fatal("unconfigured origin allowed")
+		}
+	}
+}

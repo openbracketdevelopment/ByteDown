@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrConflict  = errors.New("idempotency key conflicts with an existing request")
-	ErrLeaseLost = errors.New("worker lease lost")
+	ErrNotFound        = errors.New("not found")
+	ErrConflict        = errors.New("idempotency key conflicts with an existing request")
+	ErrLeaseLost       = errors.New("worker lease lost")
+	ErrInvalidManifest = errors.New("output manifest does not match planned count")
 )
 
 type Store struct{ pool *pgxpool.Pool }
@@ -277,7 +278,7 @@ func (s *Store) Claim(ctx context.Context, lease time.Duration) (model.Job, erro
 	return scanJob(s.pool.QueryRow(ctx, `WITH exhausted AS (
 		UPDATE jobs SET status='failed',error_code='worker_lost',error_message='Worker recovery limit reached',token=NULL,lease_until=NULL
 		WHERE id IN (SELECT id FROM jobs WHERE status='processing' AND lease_until<clock_timestamp() AND attempt>=3 FOR UPDATE SKIP LOCKED)
-	) UPDATE jobs SET status='processing',token=$1,lease_until=clock_timestamp()+$2*interval '1 second',attempt=attempt+1
+	) UPDATE jobs SET status='processing',generated=0,token=$1,lease_until=clock_timestamp()+$2*interval '1 second',attempt=attempt+1
 		WHERE id=(SELECT id FROM jobs WHERE attempt<3 AND ((status='queued' AND available_at<=clock_timestamp()) OR (status='processing' AND lease_until<clock_timestamp()))
 		ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING `+jobColumns, token, lease.Seconds()))
 }
@@ -293,8 +294,20 @@ func (s *Store) Heartbeat(ctx context.Context, id, token string, lease time.Dura
 	return nil
 }
 
+// Progress reports generated artifacts without publishing the partial manifest.
+func (s *Store) Progress(ctx context.Context, id, token string, count int) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET generated=GREATEST(generated,LEAST(planned,GREATEST($3,0))) WHERE id=$1 AND token=$2 AND status='processing' AND lease_until>clock_timestamp()`, id, token, count)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
 func (s *Store) Fail(ctx context.Context, id, token, code, message string, duration time.Duration, retry bool) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET status=CASE WHEN $6 AND attempt<3 THEN 'queued' ELSE 'failed' END,error_code=$3,error_message=$4,duration_ms=$5,token=NULL,lease_until=NULL,available_at=clock_timestamp()+interval '1 second' WHERE id=$1 AND token=$2 AND status='processing' AND lease_until>clock_timestamp()`, id, token, code, message, duration.Milliseconds(), retry)
+	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET status=CASE WHEN $6 AND attempt<3 THEN 'queued' ELSE 'failed' END,generated=CASE WHEN $6 AND attempt<3 THEN 0 ELSE generated END,error_code=$3,error_message=$4,duration_ms=$5,token=NULL,lease_until=NULL,available_at=clock_timestamp()+interval '1 second' WHERE id=$1 AND token=$2 AND status='processing' AND lease_until>clock_timestamp()`, id, token, code, message, duration.Milliseconds(), retry)
 	if err != nil {
 		return err
 	}
@@ -311,12 +324,16 @@ func (s *Store) Publish(ctx context.Context, job model.Job, outputs []model.Outp
 	}
 	defer tx.Rollback(ctx)
 	var imageID string
-	err = tx.QueryRow(ctx, `SELECT image_id FROM jobs WHERE id=$1 AND token=$2 AND status='processing' AND lease_until>clock_timestamp() FOR UPDATE`, job.ID, job.Token).Scan(&imageID)
+	var planned int
+	err = tx.QueryRow(ctx, `SELECT image_id,planned FROM jobs WHERE id=$1 AND token=$2 AND status='processing' AND lease_until>clock_timestamp() FOR UPDATE`, job.ID, job.Token).Scan(&imageID, &planned)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrLeaseLost
 	}
 	if err != nil {
 		return err
+	}
+	if planned < 1 || len(outputs) != planned {
+		return ErrInvalidManifest
 	}
 	for _, out := range outputs {
 		raw, e := json.Marshal(out)
@@ -327,7 +344,7 @@ func (s *Store) Publish(ctx context.Context, job model.Job, outputs []model.Outp
 			return err
 		}
 	}
-	tag, err := tx.Exec(ctx, `UPDATE jobs SET status='succeeded',generated=$3,duration_ms=$4,error_code='',error_message='',lease_until=NULL WHERE id=$1 AND token=$2 AND lease_until>clock_timestamp()`, job.ID, job.Token, len(outputs), duration.Milliseconds())
+	tag, err := tx.Exec(ctx, `UPDATE jobs SET status='succeeded',generated=planned,duration_ms=$4,error_code='',error_message='',lease_until=NULL WHERE id=$1 AND token=$2 AND planned=$3 AND lease_until>clock_timestamp()`, job.ID, job.Token, len(outputs), duration.Milliseconds())
 	if err != nil {
 		return err
 	}

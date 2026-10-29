@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"image/png"
 	"math"
@@ -137,7 +138,7 @@ func TestProbeAndCapabilities(t *testing.T) {
 		t.Fatalf("capabilities: %+v", formats)
 	}
 	for i, name := range []string{"jpeg", "png", "webp", "avif"} {
-		if formats[i].Format != name || !formats[i].Available || !formats[i].Output ||
+		if formats[i].Format != name || formats[i].Identifier != name || !formats[i].Available || !formats[i].Output ||
 			formats[i].Input != (name == "jpeg" || name == "png") {
 			t.Fatalf("unexpected capability: %+v", formats[i])
 		}
@@ -145,6 +146,28 @@ func TestProbeAndCapabilities(t *testing.T) {
 	formats[0].Format = "mutated"
 	if Formats()[0].Format != "jpeg" {
 		t.Fatal("capabilities share mutable storage")
+	}
+	formats[0].Options[0].Default = 1
+	if Formats()[0].Options[0].Default != 82 {
+		t.Fatal("encoder options share mutable storage")
+	}
+	for _, format := range Formats() {
+		if format.Extension == "" || format.MIME != "image/"+format.Format ||
+			format.Transparency != (format.Format != "jpeg") {
+			t.Fatalf("incomplete capability metadata: %+v", format)
+		}
+		name, err := OutputFilename(format.Format, 480)
+		if err != nil || name != format.Format+"-480."+format.Extension {
+			t.Fatalf("filename/metadata contract mismatch: %s %v", name, err)
+		}
+	}
+	for _, invalid := range []struct {
+		format string
+		width  int
+	}{{"../png", 480}, {"gif", 480}, {"png", 0}, {"png", -1}} {
+		if _, err := OutputFilename(invalid.format, invalid.width); err == nil {
+			t.Fatalf("invalid output filename accepted: %+v", invalid)
+		}
 	}
 }
 
@@ -185,6 +208,39 @@ func TestWidthsAndPlanned(t *testing.T) {
 	}
 }
 
+func TestNativeConcurrencyConfiguration(t *testing.T) {
+	original, configured := os.LookupEnv("VIPS_CONCURRENCY")
+	if err := os.Unsetenv("VIPS_CONCURRENCY"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if configured {
+			_ = os.Setenv("VIPS_CONCURRENCY", original)
+		} else {
+			_ = os.Unsetenv("VIPS_CONCURRENCY")
+		}
+	})
+	if got, err := nativeConcurrency(); err != nil || got != 1 {
+		t.Fatalf("default concurrency: %d %v", got, err)
+	}
+	for _, test := range []struct {
+		value string
+		want  int
+	}{{"1", 1}, {"16", 16}, {"4", 4}, {"0", 0}, {"17", 0}, {"-1", 0},
+		{"", 0}, {"not-a-number", 0}, {"1.5", 0}, {" 1", 0}, {"999999999999999999999999", 0}} {
+		t.Run(test.value, func(t *testing.T) {
+			t.Setenv("VIPS_CONCURRENCY", test.value)
+			got, err := nativeConcurrency()
+			if got != test.want || (err != nil) != (test.want == 0) {
+				t.Fatalf("configured %q: %d %v", test.value, got, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "VIPS_CONCURRENCY") {
+				t.Fatal("configuration error lacks the setting name")
+			}
+		})
+	}
+}
+
 func TestValidateSniffsAndChecksLimits(t *testing.T) {
 	dir := testDir(t)
 	for _, format := range []string{"jpeg", "png"} {
@@ -193,7 +249,8 @@ func TestValidateSniffsAndChecksLimits(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if input.Format != format || input.Width != 32 || input.Height != 16 || input.Bytes <= 0 {
+		if input.Format != format || input.Width != 32 || input.Height != 16 ||
+			input.EncodedWidth != 32 || input.EncodedHeight != 16 || input.Bytes <= 0 {
 			t.Fatalf("input: %+v", input)
 		}
 		for _, limits := range []model.Limits{
@@ -234,6 +291,9 @@ func TestOrientationAllEight(t *testing.T) {
 			}
 			if input.Width != w || input.Height != h {
 				t.Fatalf("orientation %d: %+v", orientation, input)
+			}
+			if input.EncodedWidth != 40 || input.EncodedHeight != 24 {
+				t.Fatalf("orientation %d lost encoded dimensions: %+v", orientation, input)
 			}
 			ref, err := normalize(data, "jpeg")
 			if err != nil {
@@ -305,6 +365,9 @@ func TestProcessFormatsAlphaAndMetrics(t *testing.T) {
 				}
 				seen[output.ID] = true
 				wantName := output.ID + "." + output.Format
+				if output.Format == "jpeg" {
+					wantName = output.ID + ".jpg"
+				}
 				if output.Path != filepath.Join(outputDir, wantName) || !strings.HasPrefix(output.Path, outputDir+string(filepath.Separator)) {
 					t.Fatalf("unsafe output: %+v", output)
 				}
@@ -315,7 +378,7 @@ func TestProcessFormatsAlphaAndMetrics(t *testing.T) {
 				if output.Bytes != stat.Size() {
 					t.Fatal("size metadata differs")
 				}
-				wantDifference := 100 * (float64(output.Bytes)/float64(input.Bytes) - 1)
+				wantDifference := 100 * (1 - float64(output.Bytes)/float64(input.Bytes))
 				if math.Abs(output.SizeDifferencePercent-wantDifference) > 1e-8 || output.Smaller != (output.Bytes < input.Bytes) {
 					t.Fatalf("savings: %+v", output)
 				}
@@ -503,7 +566,7 @@ func TestPNGExifOrientation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input.Width != 24 || input.Height != 40 {
+	if input.Width != 24 || input.Height != 40 || input.EncodedWidth != 40 || input.EncodedHeight != 24 {
 		t.Fatalf("PNG orientation ignored: %+v", input)
 	}
 }
@@ -757,7 +820,17 @@ func TestColorManagementAndCMYK(t *testing.T) {
 
 func TestGrayAndSixteenBit(t *testing.T) {
 	dir := testDir(t)
-	for _, img := range []image.Image{image.NewGray(image.Rect(0, 0, 8, 8)), image.NewGray16(image.Rect(0, 0, 8, 8)), image.NewNRGBA64(image.Rect(0, 0, 8, 8))} {
+	gray := image.NewGray(image.Rect(0, 0, 8, 8))
+	gray16 := image.NewGray16(image.Rect(0, 0, 8, 8))
+	rgba16 := image.NewNRGBA64(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			gray.SetGray(x, y, color.Gray{Y: 128})
+			gray16.SetGray16(x, y, color.Gray16{Y: 32768})
+			rgba16.SetNRGBA64(x, y, color.NRGBA64{R: 32768, G: 32768, B: 32768, A: 32768})
+		}
+	}
+	for _, img := range []image.Image{gray, gray16, rgba16} {
 		var buffer bytes.Buffer
 		if err := png.Encode(&buffer, img); err != nil {
 			t.Fatal(err)
@@ -767,5 +840,157 @@ func TestGrayAndSixteenBit(t *testing.T) {
 		if err != nil || input.Width != 8 || input.Height != 8 {
 			t.Fatalf("gray/16-bit: %+v %v", input, err)
 		}
+		ref, err := normalize(buffer.Bytes(), "png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		point, err := ref.GetPoint(0, 0)
+		ref.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sample := range point {
+			if math.Abs(sample-128) > 1 {
+				t.Fatalf("gray/16-bit samples incorrectly scaled: %v", point)
+			}
+		}
 	}
+}
+
+// Opt-in review artifacts intentionally survive this test for visual inspection.
+func TestRepresentativeRenderings(t *testing.T) {
+	if os.Getenv("BYTEDOWN_REVIEW") != "1" {
+		t.Skip("set BYTEDOWN_REVIEW=1 to preserve visual review images")
+	}
+	dir, err := filepath.Abs(".review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	savePNG := func(name string, ref *vips.ImageRef) {
+		t.Helper()
+		opts := vips.NewPngExportParams()
+		opts.Compression, opts.StripMetadata = 9, true
+		data, _, err := ref.ExportPng(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		put(t, dir, name, data)
+	}
+	run := func(name string, data []byte, p model.Profile) []model.Output {
+		t.Helper()
+		path := put(t, dir, name+"-input", data)
+		outputDir := filepath.Join(dir, name+"-outputs")
+		if err := os.RemoveAll(outputDir); err != nil {
+			t.Fatal(err)
+		}
+		outputs, err := Process(model.Task{InputPath: path, OutputDir: outputDir, Profile: p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return outputs
+	}
+	p := profile()
+	p.Widths = []int{64, 128}
+	orientation := image.NewNRGBA(image.Rect(0, 0, 240, 160))
+	for y := 0; y < 160; y++ {
+		for x := 0; x < 240; x++ {
+			c := color.NRGBA{220, 40, 35, 255}
+			if x >= 120 {
+				c = color.NRGBA{40, 190, 65, 255}
+			}
+			if y >= 80 {
+				c = color.NRGBA{35, 75, 220, 255}
+				if x >= 120 {
+					c = color.NRGBA{245, 200, 30, 255}
+				}
+			}
+			if x < 20 && y < 20 {
+				c = color.NRGBA{255, 255, 255, 255}
+			}
+			orientation.SetNRGBA(x, y, c)
+		}
+	}
+	var encoded bytes.Buffer
+	if err = jpeg.Encode(&encoded, orientation, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+	outputs := run("orientation", orientedJPEG(encoded.Bytes(), 6), p)
+	savePNG("orientation.png", decodeOutput(t, outputs[0]))
+
+	alpha := image.NewNRGBA(image.Rect(0, 0, 256, 192))
+	for y := 0; y < 192; y++ {
+		for x := 0; x < 256; x++ {
+			distance := math.Hypot(float64(x-128), float64(y-96))
+			a := uint8(math.Round(math.Max(0, math.Min(1, (88-distance)/16)) * 255))
+			alpha.SetNRGBA(x, y, color.NRGBA{uint8(40 + x*180/256), 70, 220, a})
+		}
+	}
+	encoded.Reset()
+	if err = png.Encode(&encoded, alpha); err != nil {
+		t.Fatal(err)
+	}
+	outputs = run("transparency", encoded.Bytes(), p)
+	savePNG("transparency.png", decodeOutput(t, outputs[0]))
+	for _, output := range outputs {
+		if output.Format == "avif" && output.Width == 64 {
+			savePNG("transparency-avif-64.png", decodeOutput(t, output))
+		}
+	}
+
+	linear := image.NewNRGBA(image.Rect(0, 0, 256, 128))
+	for y := 0; y < 128; y++ {
+		for x := 0; x < 256; x++ {
+			c := color.NRGBA{uint8(x), uint8(x), uint8(x), 255}
+			if y >= 64 {
+				c = color.NRGBA{uint8(x), uint8(y * 2), uint8(255 - x), 255}
+			}
+			linear.SetNRGBA(x, y, c)
+		}
+	}
+	encoded.Reset()
+	if err = png.Encode(&encoded, linear); err != nil {
+		t.Fatal(err)
+	}
+	put(t, dir, "color-linear-before.png", encoded.Bytes())
+	outputs = run("color", withPNGICC(t, encoded.Bytes(), iccProfile(false)), p)
+	savePNG("color-srgb.png", decodeOutput(t, outputs[0]))
+	sheet := image.NewNRGBA(image.Rect(0, 0, 760, 376))
+	for y := 0; y < sheet.Bounds().Dy(); y++ {
+		for x := 0; x < sheet.Bounds().Dx(); x++ {
+			shade := uint8(245)
+			if (x/12+y/12)%2 != 0 {
+				shade = 210
+			}
+			sheet.SetNRGBA(x, y, color.NRGBA{shade, shade, shade, 255})
+		}
+	}
+	for _, panel := range []struct {
+		name string
+		at   image.Point
+	}{
+		{"orientation.png", image.Pt(16, 16)},
+		{"transparency.png", image.Pt(208, 16)},
+		{"transparency-avif-64.png", image.Pt(480, 16)},
+		{"color-linear-before.png", image.Pt(208, 232)},
+		{"color-srgb.png", image.Pt(480, 232)},
+	} {
+		data, err := os.ReadFile(filepath.Join(dir, panel.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		draw.Draw(sheet, img.Bounds().Add(panel.at), img, img.Bounds().Min, draw.Over)
+	}
+	encoded.Reset()
+	if err = png.Encode(&encoded, sheet); err != nil {
+		t.Fatal(err)
+	}
+	put(t, dir, "review-sheet.png", encoded.Bytes())
+	t.Logf("preserved visual review PNGs in %s", dir)
 }

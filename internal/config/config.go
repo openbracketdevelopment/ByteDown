@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -37,9 +38,11 @@ func Load() (Config, error) {
 	if c.DatabaseURL == "" || len(c.APIKey) < 32 {
 		return c, errors.New("DATABASE_URL and an API_KEY of at least 32 bytes are required")
 	}
-	if err := json.Unmarshal([]byte(env("PUBLIC_VARIANTS", "false")), &c.PublicVariants); err != nil {
+	publicVariants := env("PUBLIC_VARIANTS", "false")
+	if publicVariants != "true" && publicVariants != "false" {
 		return c, errors.New("PUBLIC_VARIANTS must be true or false")
 	}
+	c.PublicVariants = publicVariants == "true"
 	var err error
 	for _, v := range []struct {
 		name     string
@@ -67,6 +70,9 @@ func Load() (Config, error) {
 		n, e := positive(v.name, v.fallback)
 		if e != nil {
 			return c, e
+		}
+		if n > int64(math.MaxInt) {
+			return c, fmt.Errorf("%s exceeds the platform integer limit", v.name)
 		}
 		*v.dst = int(n)
 	}
