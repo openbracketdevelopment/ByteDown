@@ -1,0 +1,312 @@
+openapi: 3.1.0
+info:
+  title: ByteDown
+  version: 0.1.0
+  description: |
+    Single-operator JPEG/PNG optimization. Management uses a server-side bearer key.
+    Variants also require it unless PUBLIC_VARIANTS is explicitly enabled.
+    Resizing contributes to reported size differences. No savings are guaranteed.
+security:
+  - bearerKey: []
+paths:
+  /health/live:
+    get:
+      security: []
+      responses:
+        '200':
+          description: Process is live
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {const: ok}
+  /health/ready:
+    get:
+      security: []
+      responses:
+        '200':
+          description: Database and storage accessible; startup codec probe succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {const: ready}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/capabilities:
+    get:
+      responses:
+        '200':
+          description: Versions, required formats, resolved profiles and limits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service_version: {type: string}
+                  pipeline_version: {type: string}
+                  accepted_inputs:
+                    type: array
+                    items: {enum: [jpeg, png]}
+                  formats:
+                    type: array
+                    items: {type: object}
+                  profiles:
+                    type: object
+                    additionalProperties: {$ref: '#/components/schemas/Profile'}
+                  limits: {$ref: '#/components/schemas/Limits'}
+                  public_variants: {type: boolean}
+        '401': {$ref: '#/components/responses/Error'}
+  /v1/images:
+    post:
+      description: |
+        Streams one file; names and MIME types are untrusted. Validates in a bounded
+        subprocess, preserves original bytes and queues durable work. Default profile web.
+        Identical idempotent retries also return 202. Key/content/profile conflicts return 409.
+        The file byte limit excludes bounded multipart overhead (64 KiB).
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: {type: string, maxLength: 200}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              additionalProperties: false
+              properties:
+                file: {type: string, format: binary}
+                profile: {type: string, default: web, maxLength: 64}
+      responses:
+        '202':
+          description: Accepted or existing idempotent upload
+          headers:
+            Location:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [image_id, job_id, status_url]
+                properties:
+                  image_id: {type: string}
+                  job_id: {type: string}
+                  status_url: {type: string}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+    get:
+      parameters:
+        - in: query
+          name: status
+          schema: {enum: [queued, processing, succeeded, failed]}
+        - in: query
+          name: limit
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - in: query
+          name: offset
+          schema: {type: integer, minimum: 0, maximum: 1000000, default: 0}
+      responses:
+        '200':
+          description: Newest first; pagination is offset based, not a consistent snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  images:
+                    type: array
+                    items: {$ref: '#/components/schemas/Image'}
+                  limit: {type: integer}
+                  offset: {type: integer}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/jobs/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/ID'}
+    get:
+      responses:
+        '200':
+          description: Counts update at complete publication; no estimated percentage
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/images/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/ID'}
+    get:
+      responses:
+        '200':
+          description: Image metadata; outputs empty until complete manifest publication
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Image'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+    delete:
+      description: |
+        Atomically removes metadata and invalidates workers. Referenced files are removed
+        best-effort; abandoned attempt files are reconciled later. Cached public variants
+        may persist until cache expiration. Already-started downloads may finish.
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/images/{id}/original:
+    parameters:
+      - {$ref: '#/components/parameters/ID'}
+    get:
+      responses:
+        '200':
+          description: Byte-identical original; always private, no-store
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+        '206': {description: Partial content for a valid byte range}
+        '304': {description: Conditional request not modified}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '416': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /media/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/ID'}
+    get:
+      description: |
+        Completed generated asset. Security requirement is waived only when the operator
+        sets PUBLIC_VARIANTS=true. Opaque IDs are not access control. Cache lifetime 86400s.
+      responses:
+        '200':
+          description: Immutable variant with nosniff
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+            image/webp:
+              schema: {type: string, format: binary}
+            image/avif:
+              schema: {type: string, format: binary}
+        '206': {description: Partial content for a valid byte range}
+        '304': {description: Conditional request not modified}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '416': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearerKey:
+      type: http
+      scheme: bearer
+  parameters:
+    ID:
+      in: path
+      name: id
+      required: true
+      schema: {type: string}
+  responses:
+    Error:
+      description: Sanitized JSON error
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: {type: string}
+                  message: {type: string}
+  schemas:
+    Profile:
+      type: object
+      required: [widths, formats, include_source, jpeg_quality, webp_quality, webp_effort, avif_quality, avif_effort]
+      properties:
+        widths:
+          type: array
+          items: {type: integer, minimum: 1}
+        formats:
+          type: array
+          items: {enum: [webp, avif]}
+        include_source: {type: boolean}
+        jpeg_quality: {type: integer, minimum: 1, maximum: 100}
+        webp_quality: {type: integer, minimum: 1, maximum: 100}
+        webp_effort: {type: integer, minimum: 0, maximum: 6}
+        avif_quality: {type: integer, minimum: 1, maximum: 100}
+        avif_effort: {type: integer, minimum: 0, maximum: 9}
+    Limits:
+      type: object
+      properties:
+        upload_bytes: {type: integer}
+        pixels: {type: integer}
+        dimension: {type: integer}
+        output_count: {type: integer}
+        output_bytes: {type: integer}
+        duration_ns: {type: integer, description: Per-child wall-clock timeout in nanoseconds}
+    Input:
+      type: object
+      description: Width/height are display dimensions after EXIF orientation; encoded dimensions describe the unchanged original raster.
+      properties:
+        format: {enum: [jpeg, png]}
+        width: {type: integer}
+        height: {type: integer}
+        bytes: {type: integer}
+        encoded_width: {type: integer}
+        encoded_height: {type: integer}
+    Output:
+      type: object
+      properties:
+        id: {type: string}
+        format: {enum: [jpeg, png, webp, avif]}
+        width: {type: integer}
+        height: {type: integer}
+        bytes: {type: integer}
+        url: {type: string}
+        size_difference_percent:
+          type: number
+          description: Percentage reduction versus uploaded bytes; negative means larger
+        smaller: {type: boolean}
+        includes_resizing: {type: boolean}
+    Image:
+      type: object
+      properties:
+        id: {type: string}
+        job_id: {type: string}
+        status: {enum: [queued, processing, succeeded, failed]}
+        original: {$ref: '#/components/schemas/Input'}
+        original_url: {type: string}
+        outputs:
+          type: array
+          items: {$ref: '#/components/schemas/Output'}
+        created_at: {type: string, format: date-time}
+    Job:
+      type: object
+      properties:
+        id: {type: string}
+        image_id: {type: string}
+        status: {enum: [queued, processing, succeeded, failed]}
+        generated: {type: integer}
+        planned: {type: integer}
+        error_code: {type: string}
+        error_message: {type: string}
+        duration_ms: {type: integer}
+        profile: {$ref: '#/components/schemas/Profile'}
+        pipeline_version: {type: string}
+        attempt: {type: integer}
