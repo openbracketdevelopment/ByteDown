@@ -22,7 +22,8 @@ alpha PNGs and synthetic graphics for actual quality/size measurements.
 URLs; do not commit them. Delete local results after evaluation.
 The live test requires localhost port 8080 to be free and OpenSSL. It builds
 images, runs full Go tests/vet against its disposable PostgreSQL, tests real
-PNG/JPEG processing, private access, deletion and a deliberately failed job,
+PNG/JPEG processing, private access, deletion, queued-job API/worker restart
+recovery and a deliberately failed job,
 then destroys only its uniquely named project's containers and volumes.
 It writes evidence to `examples/live-results/`; the tiny owned fixtures are
 correctness cases, not a representative compression benchmark.

@@ -70,6 +70,36 @@ for format in png jpg; do
     [[ "$code" == 404 ]] || { echo "Deleted resource remains accessible: $path ($code)" >&2; exit 1; }
   done
 done
+# A queued record must survive both an API restart and a stopped/restarted worker.
+compose stop worker
+curl --silent --show-error --fail -H "Authorization: $authorization" \
+  -F "file=@$root_results/input.png" -F profile=web "$BASE_URL/v1/images" > "$root_results/restart-upload.json"
+status_url="$(jq -er .status_url "$root_results/restart-upload.json")"
+curl --silent --show-error --fail -H "Authorization: $authorization" \
+  "$BASE_URL$status_url" > "$root_results/restart-job.json"
+jq -e '.status == "queued" and .generated == 0' "$root_results/restart-job.json" >/dev/null
+compose restart api
+compose up -d --no-deps --wait --wait-timeout 90 api
+curl --silent --show-error --fail -H "Authorization: $authorization" \
+  "$BASE_URL$status_url" > "$root_results/restart-job.json"
+jq -e '.status == "queued" and .generated == 0' "$root_results/restart-job.json" >/dev/null
+compose start worker
+deadline=$((SECONDS + 120))
+while :; do
+  (( SECONDS < deadline )) || { echo "Restarted job exceeded 120 seconds" >&2; exit 1; }
+  curl --silent --show-error --fail --max-time 5 -H "Authorization: $authorization" \
+    "$BASE_URL$status_url" > "$root_results/restart-job.json"
+  status="$(jq -er .status "$root_results/restart-job.json")"
+  [[ "$status" != failed ]] || { echo "Restarted job failed" >&2; exit 1; }
+  [[ "$status" != succeeded ]] || break
+  sleep 1
+done
+jq -e '.generated == .planned and .planned > 0' "$root_results/restart-job.json" >/dev/null
+image_id="$(jq -er .image_id "$root_results/restart-upload.json")"
+curl --silent --show-error --fail -H "Authorization: $authorization" \
+  "$BASE_URL/v1/images/$image_id/original" > "$root_results/restart-original.png"
+cmp "$root_results/input.png" "$root_results/restart-original.png"
+printf 'PASS: queued job persisted across API/worker restart and succeeded with original byte equality.\n'
 # The API accepts a valid upload, but the worker's deliberately impossible
 # output-byte limit must fail the job without publishing partial variants.
 MAX_OUTPUT_BYTES=1 PROCESS_TIMEOUT=10s compose up -d --no-deps --force-recreate worker
@@ -94,4 +124,4 @@ jq -e '(.outputs // [] | length) == 0' "$root_results/failed-manifest.json" >/de
 curl --silent --show-error --fail -H "Authorization: $authorization" \
   "$BASE_URL/v1/images/$image_id/original" > "$root_results/failed-original.png"
 cmp "$root_results/input.png" "$root_results/failed-original.png"
-printf 'PASS: native probe, Compose health, PNG/JPEG originals/variants, private access, deletion, bounded failed processing.\n'
+printf 'PASS: native probe, Compose health, PNG/JPEG originals/variants, private access, deletion, queued restart recovery, bounded failed processing.\n'
