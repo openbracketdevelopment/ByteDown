@@ -1,0 +1,5 @@
+/results/
+/benchmark-results/
+/live-results/
+/.test-results-*/
+/.fixture-generation/

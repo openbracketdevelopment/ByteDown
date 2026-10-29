@@ -1,0 +1,98 @@
+x-environment: &environment
+  DATABASE_URL: postgres://bytedown:${POSTGRES_PASSWORD:?Set a hex POSTGRES_PASSWORD in .env}@db:5432/bytedown?sslmode=disable
+  API_KEY: ${API_KEY:?Set an API_KEY of at least 32 bytes in .env}
+  STORAGE_DIR: /data
+  LISTEN_ADDR: :8080
+  PUBLIC_VARIANTS: ${PUBLIC_VARIANTS:-false}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+  VIPS_CONCURRENCY: ${VIPS_CONCURRENCY:-1}
+  MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+  MAX_PIXELS: ${MAX_PIXELS:-40000000}
+  MAX_DIMENSION: ${MAX_DIMENSION:-20000}
+  MAX_OUTPUT_COUNT: ${MAX_OUTPUT_COUNT:-16}
+  MAX_OUTPUT_BYTES: ${MAX_OUTPUT_BYTES:-104857600}
+  PROCESS_TIMEOUT: ${PROCESS_TIMEOUT:-120s}
+  PROFILES_JSON: ${PROFILES_JSON:-}
+
+x-app: &app
+  image: bytedown:local
+  build: .
+  environment: *environment
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m,uid=10001,gid=10001,mode=0700
+  volumes:
+    - images:/data
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  db:
+    image: postgres:17.11-trixie@sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f
+    environment:
+      POSTGRES_USER: bytedown
+      POSTGRES_DB: bytedown
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a hex POSTGRES_PASSWORD in .env}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bytedown -d bytedown"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      disable: true
+    mem_limit: 256m
+    cpus: 0.5
+  api:
+    <<: *app
+    command: ["api"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 30s
+  worker:
+    <<: *app
+    command: ["worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    mem_limit: 2g
+    cpus: 2.0
+    stop_grace_period: 150s
+
+volumes:
+  database:
+  images:

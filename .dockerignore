@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+node_modules
+examples/results
+examples/benchmark-results
+examples/live-results
+examples/.test-results-*
+coverage.*
+*.test
+*.out
+bytedown
+data
+backups

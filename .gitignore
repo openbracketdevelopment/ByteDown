@@ -27,6 +27,8 @@ go.work.sum
 
 # env file
 .env
+/bytedown
+/data/
 
 # Editor/IDE
 # .idea/
