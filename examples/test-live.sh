@@ -37,6 +37,9 @@ fi
 compose build --quiet
 docker run --rm bytedown:local probe
 compose up -d --wait --wait-timeout 90 api
+index_present="$(compose exec -T db psql -U bytedown -d bytedown -tAc \
+  "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'outputs_attempt_token')")"
+[[ "$index_present" == t ]] || { echo "Packaged migration 002 was not applied" >&2; exit 1; }
 compose up -d worker
 compose ps -a > "$RESULTS_DIR/compose-status.txt"
 docker image inspect bytedown:local --format '{{.Id}} uid={{.Config.User}}' > "$RESULTS_DIR/image.txt"

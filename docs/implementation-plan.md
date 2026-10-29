@@ -50,9 +50,8 @@ and client compatibility review; never automatically download codecs.
   bound check) and flagged SHA-256 API-key comparison as password hashing.
   The latter is a false positive: these are random bearer keys, not stored
   password hashes; fixed-size digests support constant-time comparison.
-  C++, JavaScript, and Actions had no alerts. The requested final CodeQL rerun
-  timed out after finishing Actions cleanly; a complete final scan is **not**
-  claimed.
+  C++, JavaScript, and Actions had no alerts. Subsequent CodeQL runs timed out
+  (one completed Actions cleanly); a complete final scan is **not** claimed.
 
 ## Known limitations and next milestone
 
