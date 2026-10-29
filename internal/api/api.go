@@ -276,8 +276,11 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 }
 func uploadError(w http.ResponseWriter, e error) {
 	var max *http.MaxBytesError
+	var pathError *os.PathError
 	if errors.As(e, &max) {
 		fail(w, 413, "upload_too_large", "Request exceeds the configured byte limit")
+	} else if errors.As(e, &pathError) {
+		fail(w, 503, "unavailable", "Upload storage is temporarily unavailable")
 	} else {
 		fail(w, 400, "invalid_multipart", "Malformed or truncated multipart body")
 	}

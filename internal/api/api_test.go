@@ -219,4 +219,13 @@ func TestExplicitCORSAllowlist(t *testing.T) {
 			t.Fatal("unconfigured origin allowed")
 		}
 	}
+
+}
+
+func TestUploadFilesystemFailureIsUnavailable(t *testing.T) {
+	w := httptest.NewRecorder()
+	uploadError(w, &os.PathError{Op: "write", Path: "/private/upload-path", Err: errors.New("disk full")})
+	if w.Code != 503 || strings.Contains(w.Body.String(), "private") || strings.Contains(w.Body.String(), "disk full") {
+		t.Fatalf("invalid storage error: %d %s", w.Code, w.Body.String())
+	}
 }

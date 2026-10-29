@@ -19,6 +19,7 @@ import (
 
 	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/openbracketdevelopment/ByteDown/internal/model"
+	"github.com/openbracketdevelopment/ByteDown/internal/worker/filename"
 )
 
 // Capability describes a format supported by the processing policy. Probe
@@ -165,6 +166,12 @@ func readInput(path string, l model.Limits) ([]byte, model.Input, error) {
 // loaders ignore. Color hints are accepted only when they unambiguously mean
 // sRGB or an embedded ICC profile takes precedence.
 func validatePNG(data []byte) error {
+	if len(data) < 33 {
+		return errors.New("truncated PNG header")
+	}
+	if data[24] == 16 {
+		return errors.New("16-bit PNG is unsupported; source precision must not be silently quantized")
+	}
 	seenHeader, seenData, endedData := false, false, false
 	hasICC, hasSRGB, unusualColor := false, false, false
 	seen := map[string]bool{}
@@ -212,6 +219,8 @@ func validatePNG(data []byte) error {
 			return nil
 		case "acTL", "fcTL", "fdAT":
 			return errors.New("animated PNG is unsupported")
+		case "cICP", "mDCV", "cLLI":
+			return errors.New("HDR PNG color metadata is unsupported")
 		case "iCCP", "sRGB", "gAMA", "cHRM":
 			if seenData || seen[kind] {
 				return errors.New("invalid PNG color chunk ordering")
@@ -500,18 +509,7 @@ func encode(ref *vips.ImageRef, format string, p model.Profile) ([]byte, error) 
 // OutputFilename is the canonical child/worker filename contract. It does not
 // initialize libvips and rejects unsupported formats and invalid dimensions.
 func OutputFilename(format string, width int) (string, error) {
-	if width <= 0 {
-		return "", errors.New("invalid output width")
-	}
-	extension := format
-	switch format {
-	case "jpeg":
-		extension = "jpg"
-	case "png", "webp", "avif":
-	default:
-		return "", errors.New("unsupported output format")
-	}
-	return fmt.Sprintf("%s-%d.%s", format, width, extension), nil
+	return filename.For(format, width)
 }
 
 // Process generates each output directly from one oriented, color-normalized,
@@ -693,7 +691,7 @@ func Formats() []Capability {
 			Transparency: true, Input: true, Output: true, Available: true,
 			Options: []EncoderOption{
 				{Name: "compression", Minimum: 9, Maximum: 9, Default: 9, Fixed: true,
-					Description: "Lossless DEFLATE level 9; palette quantization is disabled."},
+					Description: "Lossless DEFLATE level 9; palette quantization is disabled. 16-bit and HDR PNG inputs are rejected."},
 			}},
 		{Format: "webp", Identifier: "webp", Extension: "webp", MIME: "image/webp",
 			Transparency: true, Output: true, Available: true,

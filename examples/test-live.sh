@@ -13,6 +13,7 @@ authorization="$(printf '%s %s' Bearer "$API_KEY")"
 mkdir -p "$RESULTS_DIR"
 chmod 700 "$RESULTS_DIR"
 compose() { docker compose -p "$project" "$@"; }
+curl() { command curl --connect-timeout 5 --max-time 30 "$@"; }
 cleanup() {
   result=$?
   if (( result != 0 )); then compose logs --tail=80 api worker migrate >&2 || true; fi
@@ -22,13 +23,17 @@ cleanup() {
 trap cleanup EXIT
 docker version --format '{{.Client.Version}} / {{.Server.Version}}' > "$RESULTS_DIR/docker-version.txt"
 uname -srm > "$RESULTS_DIR/environment.txt"
-docker build --quiet --target build -t bytedown:ci-native-check .
+if [[ "${SKIP_GO_CHECKS:-false}" != true ]]; then
+  docker build --quiet --target build -t bytedown:ci-native-check .
+fi
 compose up -d --wait db
 test_url="postgres://bytedown:${POSTGRES_PASSWORD}@db:5432/bytedown?sslmode=disable"
-docker run --rm --network "${project}_default" \
-  -e TEST_DATABASE_URL="$test_url" -e VIPS_CONCURRENCY=1 \
-  bytedown:ci-native-check sh -c 'go test ./... && go vet ./...' \
-  | tee "$RESULTS_DIR/go-checks.txt"
+if [[ "${SKIP_GO_CHECKS:-false}" != true ]]; then
+  docker run --rm --network "${project}_default" \
+    -e TEST_DATABASE_URL="$test_url" -e VIPS_CONCURRENCY=1 \
+    bytedown:ci-native-check sh -c 'go test ./... && go vet ./...' \
+    | tee "$RESULTS_DIR/go-checks.txt"
+fi
 compose build --quiet
 docker run --rm bytedown:local probe
 compose up -d --wait --wait-timeout 90 api
@@ -45,6 +50,10 @@ for format in png jpg; do
   jq -e '.status == "succeeded" and .generated == .planned and .duration_ms >= 0' \
     "$root_results/$format/job.json" >/dev/null
   manifest="$root_results/$format/manifest.json"
+  for headers in "$root_results/$format"/*.headers; do
+    grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$' "$headers"
+    grep -Eiq '^cache-control:[[:space:]]*private,' "$headers"
+  done
   image_id="$(jq -er .id "$manifest")"
   variant_url="$(jq -er '.outputs[0].url' "$manifest")"
   code="$(curl --silent --output /dev/null --write-out '%{http_code}' "$BASE_URL$variant_url")"
@@ -82,4 +91,4 @@ jq -e '(.outputs // [] | length) == 0' "$root_results/failed-manifest.json" >/de
 curl --silent --show-error --fail -H "Authorization: $authorization" \
   "$BASE_URL/v1/images/$image_id/original" > "$root_results/failed-original.png"
 cmp "$root_results/input.png" "$root_results/failed-original.png"
-printf 'PASS: full Go tests/vet, native probe, Compose health, PNG/JPEG originals/variants, private access, deletion, bounded failed processing.\n'
+printf 'PASS: native probe, Compose health, PNG/JPEG originals/variants, private access, deletion, bounded failed processing.\n'

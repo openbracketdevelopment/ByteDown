@@ -494,6 +494,9 @@ func TestRejectUnsupportedAnimatedAndCorrupt(t *testing.T) {
 		"apng-frame":      addPNGChunk(pngData, "fcTL", make([]byte, 26)),
 		"png-gamma":       addPNGChunk(pngData, "gAMA", gamma),
 		"png-invalid-icc": addPNGChunk(pngData, "iCCP", []byte("broken\x00\x00bad-zlib")),
+		"png-hdr-cicp":    addPNGChunk(pngData, "cICP", []byte{9, 16, 0, 1}),
+		"png-hdr-mdcv":    addPNGChunk(pngData, "mDCV", make([]byte, 24)),
+		"png-hdr-clli":    addPNGChunk(pngData, "cLLI", make([]byte, 8)),
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -818,7 +821,7 @@ func TestColorManagementAndCMYK(t *testing.T) {
 	}
 }
 
-func TestGrayAndSixteenBit(t *testing.T) {
+func TestGrayAndRejectSixteenBit(t *testing.T) {
 	dir := testDir(t)
 	gray := image.NewGray(image.Rect(0, 0, 8, 8))
 	gray16 := image.NewGray16(image.Rect(0, 0, 8, 8))
@@ -830,15 +833,21 @@ func TestGrayAndSixteenBit(t *testing.T) {
 			rgba16.SetNRGBA64(x, y, color.NRGBA64{R: 32768, G: 32768, B: 32768, A: 32768})
 		}
 	}
-	for _, img := range []image.Image{gray, gray16, rgba16} {
+	for i, img := range []image.Image{gray, gray16, rgba16} {
 		var buffer bytes.Buffer
 		if err := png.Encode(&buffer, img); err != nil {
 			t.Fatal(err)
 		}
 		path := put(t, dir, "gray.png", buffer.Bytes())
 		input, err := Validate(path, model.Limits{})
+		if i > 0 {
+			if err == nil || !strings.Contains(err.Error(), "16-bit PNG") {
+				t.Fatalf("16-bit source was not explicitly rejected: %+v %v", input, err)
+			}
+			continue
+		}
 		if err != nil || input.Width != 8 || input.Height != 8 {
-			t.Fatalf("gray/16-bit: %+v %v", input, err)
+			t.Fatalf("8-bit gray: %+v %v", input, err)
 		}
 		ref, err := normalize(buffer.Bytes(), "png")
 		if err != nil {
@@ -851,9 +860,45 @@ func TestGrayAndSixteenBit(t *testing.T) {
 		}
 		for _, sample := range point {
 			if math.Abs(sample-128) > 1 {
-				t.Fatalf("gray/16-bit samples incorrectly scaled: %v", point)
+				t.Fatalf("8-bit gray samples incorrectly scaled: %v", point)
 			}
 		}
+	}
+}
+
+func TestLowBitPaletteExpandsWithoutQuantization(t *testing.T) {
+	dir := testDir(t)
+	img := image.NewPaletted(image.Rect(0, 0, 8, 8), color.Palette{
+		color.NRGBA{255, 0, 0, 255}, color.NRGBA{0, 0, 255, 0},
+	})
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			img.SetColorIndex(x, y, uint8((x+y)%2))
+		}
+	}
+	var data bytes.Buffer
+	if err := png.Encode(&data, img); err != nil {
+		t.Fatal(err)
+	}
+	if data.Bytes()[24] != 1 {
+		t.Fatal("fixture is not a one-bit palette PNG")
+	}
+	path := put(t, dir, "palette.png", data.Bytes())
+	outputs, err := Process(model.Task{InputPath: path, OutputDir: filepath.Join(dir, "outputs")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := decodeOutput(t, outputs[0])
+	if !ref.HasAlpha() {
+		t.Fatal("palette transparency lost")
+	}
+	opaque, err := ref.GetPoint(0, 0)
+	if err != nil || !slices.Equal(opaque, []float64{255, 0, 0, 255}) {
+		t.Fatalf("palette color quantized: %v %v", opaque, err)
+	}
+	transparent, err := ref.GetPoint(1, 0)
+	if err != nil || transparent[3] != 0 {
+		t.Fatalf("palette alpha changed: %v %v", transparent, err)
 	}
 }
 

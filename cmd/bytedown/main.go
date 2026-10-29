@@ -59,6 +59,9 @@ func run() error {
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
+	if err := config.ValidateNativeConcurrency(); err != nil {
+		return &commandError{err.Error()}
+	}
 	if command == "healthcheck" {
 		addr, err := healthAddress(os.Getenv("LISTEN_ADDR"))
 		if err != nil {

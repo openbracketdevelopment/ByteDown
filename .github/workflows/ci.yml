@@ -49,4 +49,15 @@ jobs:
         run: node examples/test-examples.mjs
       - run: docker build --tag bytedown:ci .
       - name: Native encoder probe in the non-root runtime
-        run: docker run --rm --entrypoint /usr/local/bin/bytedown bytedown:ci probe
+        run: |
+          docker run --rm bytedown:ci probe
+          docker run --rm -e VIPS_CONCURRENCY=2 bytedown:ci probe
+      - name: Reject invalid native concurrency configuration clearly
+        run: |
+          for value in 0 17 invalid; do
+            if message="$(docker run --rm -e VIPS_CONCURRENCY="$value" bytedown:ci probe 2>&1)"; then
+              echo "Invalid VIPS_CONCURRENCY unexpectedly succeeded: $value"
+              exit 1
+            fi
+            printf '%s\n' "$message" | grep -q VIPS_CONCURRENCY
+          done

@@ -4,10 +4,13 @@
 // Input EncodedWidth/EncodedHeight retain the original unrotated raster size;
 // Width/Height describe its oriented display size.
 // Both encoded and oriented dimensions are checked before pixel allocation.
-// Untagged RGB/gray is treated as sRGB. Embedded RGB, gray and CMYK ICC profiles
+// Untagged 8-bit RGB/gray is treated as sRGB. Embedded RGB, gray and CMYK ICC profiles
 // are converted to sRGB; untagged CMYK, incompatible/broken profiles and
 // non-sRGB PNG gamma/chromaticity without an ICC profile are rejected rather
 // than guessed. Outputs contain sRGB pixels without EXIF or other metadata.
+// 16-bit PNG is rejected before native decoding rather than silently reduced
+// to 8-bit. PNG cICP, mDCV and cLLI signaling is rejected as unsupported HDR.
+// Lower-bit-depth PNG palettes and grayscale expand losslessly to 8-bit samples.
 //
 // Every job includes a re-encoded, full-size copy in the input format. Profile
 // IncludeSource controls whether the input width is also included among the

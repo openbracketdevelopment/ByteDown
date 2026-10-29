@@ -3,9 +3,20 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { inflateSync } from "node:zlib";
 
 const directory = `examples/.test-results-${process.pid}`;
 const png = Buffer.from(await readFile("examples/fixture.png.base64", "utf8"), "base64");
+assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+const compressed = [];
+for (let offset = 8; offset < png.length;) {
+  const length = png.readUInt32BE(offset);
+  if (png.subarray(offset + 4, offset + 8).toString() === "IDAT") {
+    compressed.push(png.subarray(offset + 8, offset + 8 + length));
+  }
+  offset += length + 12;
+}
+assert.equal(inflateSync(Buffer.concat(compressed)).length, 48 * (1 + 64 * 3));
 const key = "x".repeat(32);
 let corrupt = false;
 let uploads = 0;

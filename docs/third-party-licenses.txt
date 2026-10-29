@@ -17,7 +17,7 @@ This inventory is not legal advice or a patent clearance statement.
 
 libvips is dynamically linked, not vendored into the Go executable. The runtime
 image retains Debian copyright/license records and shared libraries. The build
-also copies downloaded Go modules' top-level LICENSE/COPYING/NOTICE files to
+also copies downloaded Go modules' top-level LICENSE/COPYING/NOTICE/PATENTS files to
 `/usr/share/doc/bytedown/modules`, including transitive and test dependencies,
 and Go's license to `/usr/share/doc/bytedown/GO-LICENSE`. Inspect
 the **actual built image**, because dependency/security revisions can change:

@@ -134,7 +134,7 @@ paths:
     get:
       responses:
         '200':
-          description: Counts update at complete publication; no estimated percentage
+          description: Staged output count updates on worker heartbeats and final publication; no estimated percentage
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Job'}

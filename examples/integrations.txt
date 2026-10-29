@@ -26,6 +26,8 @@ PNG/JPEG processing, private access, deletion and a deliberately failed job,
 then destroys only its uniquely named project's containers and volumes.
 It writes evidence to `examples/live-results/`; the tiny owned fixtures are
 correctness cases, not a representative compression benchmark.
+For a deployment-only rerun after Go sources have already passed the full
+native checks, use `SKIP_GO_CHECKS=true bash examples/test-live.sh`.
 
 ## Next.js App Router (scoped snippets)
 

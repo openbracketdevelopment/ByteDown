@@ -26,7 +26,9 @@ Registry v2:
 Sources: [official Go image][go-image], [Debian image][debian-image],
 [PostgreSQL image][pg-image], [Registry manifest API][registry].
 The Go module targets Go 1.25; the image pins a Go 1.25 patch.
-[govips 2.20.0 requires Go ≥1.23 and libvips ≥8.14][govips].
+govips 2.20.0's [pinned go.mod][govips-module] requires **Go 1.25.0**.
+Its [README requirements][govips] still advertise an older Go minimum; use the
+module requirement for builds. The documented native minimum is libvips ≥8.14.
 Trixie's [libvips-dev][vips-dev] and [libvips42t64][vips-runtime] supply
 8.16.1 (security package revisions can advance). Both stages use the same
 Debian release to avoid native ABI mismatch. Apt security revisions are not
@@ -42,9 +44,15 @@ bridge at build time; its shared runtime dependency is supplied by libvips.
 
 ## Startup and monitoring
 
-`docker compose up --build -d` waits for `pg_isready`, runs migrations to
-completion, then starts API and worker. `pg_isready` only proves PostgreSQL is
-accepting connections, not that the application schema is usable.
+For a bounded fresh startup, run
+`docker compose up --build --wait --wait-timeout 240 api`, followed by
+`docker compose up -d worker`. The API-targeted wait includes database health
+and the migration's `service_completed_successfully` dependency, and waits for
+API readiness. The one-shot migration is expected to exit successfully, not
+remain running; this sequence was verified with Compose 2.38.2.
+Do not target the entire stack with `--wait`: the worker intentionally has no
+healthcheck. `pg_isready` only proves PostgreSQL is accepting connections, not
+that the application schema is usable.
 
 ```bash
 docker compose ps -a
@@ -56,7 +64,10 @@ docker stats --no-stream
 ```
 
 The API container healthcheck invokes `bytedown healthcheck` against HTTP
-readiness. API readiness is **not worker liveness**. Worker healthcheck is
+readiness. Readiness checks PostgreSQL and all expected storage directories,
+plus the cached successful result of the actual native codec smoke test run
+at startup. It does **not** rerun a native encoder probe on every readiness
+request. API readiness is **not worker liveness**. Worker healthcheck is
 deliberately disabled: rerunning a codec probe is expensive and cannot prove a
 worker is claiming jobs. Monitor oldest queued-job age, stuck processing jobs,
 failures, process restarts, storage capacity and a periodic end-to-end canary.
@@ -66,8 +77,26 @@ required, and never enable logging of API keys or sensitive upload bodies.
 
 ## Limits, disk and shutdown
 
-Start at one worker and one libvips thread; concurrency multiplies native memory
-pressure. Compose caps API at 512 MiB/1 CPU, worker at 2 GiB/2 CPUs, database at
+Start with `WORKER_CONCURRENCY=1` and `VIPS_CONCURRENCY=1`; increasing either can
+increase native CPU and memory pressure. `VIPS_CONCURRENCY` configures libvips
+inside **each native child**, defaults to 1, and accepts only integers `1..16`.
+Direct binary invocation defaults only when the variable is unset; explicitly
+empty, noninteger, or out-of-range values fail startup. Compose's `:-1`
+interpolation replaces an empty or missing value with 1 before launching.
+`WORKER_CONCURRENCY` independently limits job-processing children in **each
+worker container** and upload-validation children in **each API container**.
+One API plus one worker at the defaults can therefore run one validation child
+and one processing child concurrently. It is not a service-wide single-child
+limit.
+
+Replicas multiply these independent budgets. With the same settings everywhere,
+`(API replicas + worker replicas) × WORKER_CONCURRENCY` is the maximum combined
+validation/processing child count, excluding startup probes. Each of
+those processes has its own libvips concurrency setting; codec/library and Go
+runtime threads can exist beyond that libvips pool. Do not interpret it as a
+strict total OS-thread limit or assume that API validation is memory-free.
+
+Compose caps API at 512 MiB/1 CPU, worker at 2 GiB/2 CPUs, database at
 512 MiB/1 CPU, and migration at 256 MiB/0.5 CPU. These are starting limits, not
 capacity promises. Workloads near the 40-million-pixel ceiling may need tuning
 or lower limits; cgroup OOM termination is possible. Runtime scratch storage is
@@ -75,6 +104,11 @@ a bounded 256 MiB container tmpfs. Docker's tmpfs is runtime scratch, not a back
 
 Defaults bound uploads (20 MiB), pixels (40 million), either dimension (20,000),
 output count (16), total output bytes (100 MiB), and process duration (120s).
+The API wraps all HTTP requests in a `PROCESS_TIMEOUT + 30s` deadline, and the
+HTTP server's upload `ReadTimeout` uses that same value. An isolated validation
+child gets at most `PROCESS_TIMEOUT` but also shares its request's context, so
+the outer deadline can cancel it sooner after upload/queueing time. Each worker
+processing child has its own `PROCESS_TIMEOUT` budget.
 Check `/v1/capabilities` for resolved profiles. Restrict HTTP request size and
 rate at the edge as well. Pixel limits do not guarantee bounded decoder CPU.
 Disk must hold originals, all variants, in-progress writes and database WAL.
@@ -165,7 +199,8 @@ For **disposable development data only**:
 
 ```bash
 docker compose down -v   # DESTRUCTIVE: deletes database and all uploaded images
-docker compose up --build -d
+docker compose up --build --wait --wait-timeout 240 api
+docker compose up -d worker
 ```
 
 [go-image]: https://hub.docker.com/_/golang
@@ -173,5 +208,6 @@ docker compose up --build -d
 [pg-image]: https://hub.docker.com/_/postgres
 [registry]: https://distribution.github.io/distribution/spec/api/#pulling-an-image-manifest
 [govips]: https://github.com/davidbyttow/govips/blob/v2.20.0/README.md#requirements
+[govips-module]: https://github.com/davidbyttow/govips/blob/v2.20.0/go.mod
 [vips-dev]: https://packages.debian.org/trixie/libvips-dev
 [vips-runtime]: https://packages.debian.org/trixie/libvips42t64

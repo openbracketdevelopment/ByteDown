@@ -22,7 +22,8 @@ cp .env.example .env
 chmod 600 .env
 printf 'POSTGRES_PASSWORD=%s\nAPI_KEY=%s\n' \
   "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
-docker compose up --build -d
+docker compose up --build --wait --wait-timeout 240 api
+docker compose up -d worker
 docker compose ps -a
 curl --fail http://127.0.0.1:8080/health/ready
 set -a; . ./.env; set +a
@@ -35,6 +36,9 @@ Compose starts PostgreSQL, runs the one-shot migration, then starts API and
 worker from the **same non-root image**. API binds only `127.0.0.1:8080`;
 PostgreSQL has no published port. Named `database` and `images` volumes persist
 across `docker compose down`. Never use `down -v` on data you want to keep.
+The first command waits for database health, successful one-shot migration,
+and API readiness before the demo. Wait targets only API and its dependencies:
+the worker intentionally has no container healthcheck.
 
 The sample is an original, generated 64×48 PNG, intentionally not a meaningful
 compression benchmark. The demo uploads profile `web`, polls for at most 120
@@ -64,13 +68,15 @@ Management, originals, and (by default) variants require a bearer API key.
 `GET /v1/images/{image_id}` for the manifest. Uploads enqueue work; they do not
 perform synchronous optimization.
 
-The manifest reports original format/dimensions/bytes, `original_url`, and
+The manifest reports original format/bytes, orientation-normalized `width` and
+`height`, stored-file `encoded_width` and `encoded_height`, `original_url`, and
 `outputs` with format/dimensions/bytes/URL, `smaller`,
 `size_difference_percent`, and `includes_resizing`. Job progress uses
 `generated`/`planned` counts and measured `duration_ms`, not invented percentages.
-See [API contract](docs/api.md).
+Original downloads remain byte-identical despite the normalized display
+dimensions. See the [API contract](docs/api.md) and [OpenAPI schema](docs/openapi.yaml).
 
-Keep the key on your backend. [Next.js examples](examples/README.md) include a
+Keep the key on your backend. [Next.js examples](examples/integrations.txt) include a
 session-protected upload route and responsive native `<picture>` component
 that avoids Next image re-encoding. Public media is **opt-in**:
 `PUBLIC_VARIANTS=true` makes variant URLs accessible without the key; originals
@@ -87,7 +93,8 @@ Use URL-safe hex database passwords with the supplied Compose URL.
 |---|---|
 | `STORAGE_DIR` / `LISTEN_ADDR` | `/data` / `:8080` |
 | `PUBLIC_VARIANTS` / `CORS_ORIGINS` | `false` / empty |
-| `WORKER_CONCURRENCY` / `VIPS_CONCURRENCY` | `1` / `1` |
+| `WORKER_CONCURRENCY` | `1` (independent child slots per API and per worker container) |
+| `VIPS_CONCURRENCY` | `1` (libvips concurrency per native child; valid range `1..16`) |
 | `MAX_UPLOAD_BYTES` | `20971520` (20 MiB) |
 | `MAX_PIXELS` / `MAX_DIMENSION` | `40000000` / `20000` |
 | `MAX_OUTPUT_COUNT` | `16` |
@@ -99,13 +106,21 @@ Query `/v1/capabilities` with authentication for resolved profiles and encoder
 availability. JPEG/PNG inputs only; animation, SVG, GIF, remote URLs, dynamic
 transforms, PDF and video are not supported. Resource limits do not turn an
 image decoder into an isolation boundary. Budget memory/disk and use an edge
-proxy with request limits. See [operations](docs/operations.md) for TLS, worker
+proxy with request limits. See [operations](docs/operations.txt) for TLS, worker
 monitoring, backups, restore, upgrades and destructive development reset.
+
+`WORKER_CONCURRENCY` applies independently to each worker's processing slots
+**and** each API container's isolated upload-validation slots. With one of each,
+the default therefore permits one validation child plus one processing child,
+not one native process service-wide. Every replica adds its own slots, and each
+native child uses `VIPS_CONCURRENCY`; account for both multipliers when sizing.
 
 ## Development and verification
 
-Go `1.25` with CGO, a C compiler, `pkg-config`, and **libvips ≥8.14** are needed
-for govips `v2.20.0` ([upstream requirements][govips]). Debian 13 provides
+Go `1.25` with CGO, a C compiler, `pkg-config`, and **libvips ≥8.14** are needed.
+govips `v2.20.0`'s [pinned go.mod][govips-module] requires Go 1.25.0; its
+[README requirements][govips] still list an older Go minimum. The module
+requirement is authoritative for this build. Debian 13 provides
 libvips 8.16.1, compatible with that minimum ([development package][vips-dev]).
 Debian 12's older native library is not the supported build environment here.
 
@@ -134,9 +149,9 @@ Base images and the checkout action are pinned to verified upstream digests/
 commit SHAs. Apt packages intentionally receive current Debian security updates,
 so builds are not byte-for-byte reproducible. Upgrade pins regularly.
 
-[Operations](docs/operations.md) · [Architecture](docs/architecture.md) ·
-[Third-party notices](docs/third-party-licenses.md) · [License](LICENSE)
+[Operations](docs/operations.txt) · [Architecture](docs/architecture.md) ·
+[Third-party notices](docs/third-party-licenses.txt) · [License](LICENSE)
 
 [govips]: https://github.com/davidbyttow/govips/blob/v2.20.0/README.md#requirements
+[govips-module]: https://github.com/davidbyttow/govips/blob/v2.20.0/go.mod
 [vips-dev]: https://packages.debian.org/trixie/libvips-dev
-An image optimization tool

@@ -30,6 +30,14 @@ JPEG is lossy. Quality numbers are independent codec controls, not equivalent
 perceptual quality. The format registry and encode/decode smoke probe are the
 authority for runtime codec availability.
 
+Untagged RGB and grayscale inputs are deliberately treated as sRGB. Supported
+embedded RGB, grayscale, and CMYK ICC profiles are transformed to sRGB using
+Little CMS through libvips. Untagged CMYK, broken/incompatible profiles,
+unsupported PNG gamma/chromaticity, 16-bit PNG, and HDR color chunks are rejected.
+The normalized pipeline is 8-bit; rejecting higher precision avoids silently
+quantizing a supposedly lossless PNG copy. PNG palette expansion preserves
+decoded colors and alpha; it does not introduce palette quantization.
+
 ## Files and transactions
 
 Filesystem rename and PostgreSQL commit are not one transaction. Files are

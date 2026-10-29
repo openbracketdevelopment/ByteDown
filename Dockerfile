@@ -13,7 +13,7 @@ RUN mkdir -p /out/licenses \
     | while read -r module directory; do \
         [ -n "$directory" ] || continue; \
         mkdir -p "/out/licenses/$module"; \
-        for notice in "$directory"/LICENSE* "$directory"/COPYING* "$directory"/NOTICE*; do \
+        for notice in "$directory"/LICENSE* "$directory"/COPYING* "$directory"/NOTICE* "$directory"/PATENTS*; do \
             if [ -f "$notice" ]; then cp "$notice" "/out/licenses/$module/"; fi; \
         done; \
     done
@@ -29,7 +29,7 @@ RUN apt-get update \
 COPY --from=build /out/bytedown /usr/local/bin/bytedown
 COPY --from=build /usr/local/go/LICENSE /usr/share/doc/bytedown/GO-LICENSE
 COPY --from=build /out/licenses /usr/share/doc/bytedown/modules
-COPY LICENSE docs/third-party-licenses.md /usr/share/doc/bytedown/
+COPY LICENSE docs/third-party-licenses.txt /usr/share/doc/bytedown/
 ENV STORAGE_DIR=/data LISTEN_ADDR=:8080 VIPS_CONCURRENCY=1
 USER 10001:10001
 EXPOSE 8080

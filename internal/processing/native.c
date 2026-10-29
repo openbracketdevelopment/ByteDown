@@ -74,9 +74,12 @@ int bd_normalize(const void *data, size_t length, int jpeg, bd_image *result) {
     if (failed)
         goto done;
     VipsInterpretation type = loaded->Type;
+    if (loaded->BandFmt != VIPS_FORMAT_UCHAR) {
+        vips_error("processing", "%s", "non-8-bit decoded input is unsupported");
+        goto done;
+    }
     if (type != VIPS_INTERPRETATION_sRGB && type != VIPS_INTERPRETATION_RGB &&
-        type != VIPS_INTERPRETATION_RGB16 && type != VIPS_INTERPRETATION_B_W &&
-        type != VIPS_INTERPRETATION_GREY16 && type != VIPS_INTERPRETATION_CMYK) {
+        type != VIPS_INTERPRETATION_B_W && type != VIPS_INTERPRETATION_CMYK) {
         vips_error("processing", "%s", "unsupported input colorspace");
         goto done;
     }

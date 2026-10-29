@@ -23,6 +23,31 @@ func TestDefaults(t *testing.T) {
 		t.Fatal("unsafe or unexpected defaults")
 	}
 }
+
+func TestNativeConcurrency(t *testing.T) {
+	for _, value := range []string{"1", "2", "16", "0", "17", "", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("VIPS_CONCURRENCY", value)
+			err := ValidateNativeConcurrency()
+			valid := value == "1" || value == "2" || value == "16"
+			if (err == nil) != valid {
+				t.Fatalf("unexpected validation for %q: %v", value, err)
+			}
+		})
+	}
+}
+
+func TestLowerDimensionLimitKeepsDefaultProfile(t *testing.T) {
+	environment(t)
+	t.Setenv("MAX_DIMENSION", "1000")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Limits.Dimension != 1000 || len(c.Profiles["web"].Widths) != 4 {
+		t.Fatal("dimension limit unexpectedly changed the configured profile")
+	}
+}
 func TestRejectInvalid(t *testing.T) {
 	for _, tc := range []struct{ k, v string }{
 		{"API_KEY", "short"}, {"DATABASE_URL", ""}, {"MAX_UPLOAD_BYTES", "-1"},

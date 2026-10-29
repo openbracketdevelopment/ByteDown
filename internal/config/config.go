@@ -26,6 +26,18 @@ type Config struct {
 	Profiles       map[string]model.Profile
 }
 
+func ValidateNativeConcurrency() error {
+	value, present := os.LookupEnv("VIPS_CONCURRENCY")
+	if !present {
+		return nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 || n > 16 {
+		return errors.New("VIPS_CONCURRENCY must be an integer from 1 to 16")
+	}
+	return nil
+}
+
 func Load() (Config, error) {
 	c := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"), APIKey: os.Getenv("API_KEY"),
@@ -107,7 +119,7 @@ func Load() (Config, error) {
 			seen[f] = true
 		}
 		for _, w := range p.Widths {
-			if w <= 0 || w > c.Limits.Dimension {
+			if w <= 0 {
 				return c, fmt.Errorf("invalid widths in profile %q", name)
 			}
 		}

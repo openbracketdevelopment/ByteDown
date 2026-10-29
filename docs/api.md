@@ -11,7 +11,7 @@ browser code or a `NEXT_PUBLIC` environment variable. CORS is disabled by defaul
 | GET | /health/ready | Sanitized database, storage, and encoder readiness |
 | GET | /v1/capabilities | Versions, profiles, formats, limits |
 | POST | /v1/images | Multipart `file` and `profile`; 202 accepted |
-| GET | /v1/jobs/{id} | State, completed/planned counts, sanitized failures |
+| GET | /v1/jobs/{id} | State, generated/planned counts, sanitized failures |
 | GET | /v1/images/{id} | Metadata and completed manifest |
 | GET | /v1/images | Paginated list, optional status filter |
 | GET | /v1/images/{id}/original | Private original bytes |
@@ -64,5 +64,16 @@ download still has its original metadata and bytes.
 List responses use `images`, `limit`, and `offset`. Default limit is 50, maximum
 100. Offset pagination can shift under concurrent changes. Job `duration_ms` is
 the measured duration of its last attempt, not queue waiting time.
+`generated` observes nonempty staged output files on worker heartbeats and is
+finalized at successful publication. It can reset on retry; it is not permission
+to download partial results. The image's output manifest remains empty until
+every required output is committed successfully.
 Required formats are smoke-tested during API/worker startup. Readiness relies
 on that startup result and rechecks database and writable storage access.
+
+Deletion removes image/job/output/idempotency records transactionally and
+invalidates active worker publication. Referenced files are removed best-effort;
+crash leftovers and abandoned attempts are reclaimed by age-gated worker
+reconciliation. The deleted idempotency key can subsequently be reused.
+Already-started downloads may finish, and public caches may retain variants for
+the advertised 86,400-second cache lifetime. Originals never become public.
