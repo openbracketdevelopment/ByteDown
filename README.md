@@ -104,7 +104,10 @@ Use URL-safe hex database passwords with the supplied Compose URL.
 
 Query `/v1/capabilities` with authentication for resolved profiles and encoder
 availability. JPEG/PNG inputs only; animation, SVG, GIF, remote URLs, dynamic
-transforms, PDF and video are not supported. Resource limits do not turn an
+transforms, PDF and video are not supported. Sixteen-bit PNG and PNG
+`cICP`/`mDCV`/`cLLI` metadata are rejected rather than silently quantized;
+supported lower-bit palette/grayscale PNG expands losslessly to 8-bit channels.
+Resource limits do not turn an
 image decoder into an isolation boundary. Budget memory/disk and use an edge
 proxy with request limits. See [operations](docs/operations.txt) for TLS, worker
 monitoring, backups, restore, upgrades and destructive development reset.

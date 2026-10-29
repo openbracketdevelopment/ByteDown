@@ -104,6 +104,10 @@ a bounded 256 MiB container tmpfs. Docker's tmpfs is runtime scratch, not a back
 
 Defaults bound uploads (20 MiB), pixels (40 million), either dimension (20,000),
 output count (16), total output bytes (100 MiB), and process duration (120s).
+Sixteen-bit PNG and PNG carrying `cICP`, `mDCV`, or `cLLI` metadata are rejected
+before native decoding, rather than silently reducing precision. Supported
+lower-bit palette/grayscale PNG expands losslessly to 8-bit channels.
+Untagged 8-bit RGB/grayscale is assumed sRGB.
 The API wraps all HTTP requests in a `PROCESS_TIMEOUT + 30s` deadline, and the
 HTTP server's upload `ReadTimeout` uses that same value. An isolated validation
 child gets at most `PROCESS_TIMEOUT` but also shares its request's context, so
