@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -1038,4 +1039,59 @@ func TestRepresentativeRenderings(t *testing.T) {
 	}
 	put(t, dir, "review-sheet.png", encoded.Bytes())
 	t.Logf("preserved visual review PNGs in %s", dir)
+}
+
+func TestOnePlusJPEGTailer(t *testing.T) {
+	dir := testDir(t)
+	jpegData := fixture(t, "jpeg", 32, 16, false)
+	tail := append([]byte{0, 0, 0, 0, 0xcd, 0xcc, 0x8c, 0x3f}, []byte("\xffOnePlus camera metadata")...)
+	binary.BigEndian.PutUint32(tail, uint32(len(tail)))
+	data := append(append([]byte{}, jpegData...), tail...)
+	path := put(t, dir, "oneplus.jpg", data)
+	input, err := Validate(path, model.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Bytes != int64(len(data)) {
+		t.Fatal("original trailer excluded from original byte count")
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputs, err := Process(model.Task{InputPath: path, OutputDir: filepath.Join(dir, "out"), Profile: model.Profile{IncludeSource: true, Formats: []string{"webp", "avif"}, JPEGQuality: 82, WebPQuality: 80, WebPEffort: 1, AVIFQuality: 50, AVIFEffort: 0}})
+	if err != nil || len(outputs) != 3 {
+		t.Fatalf("outputs=%d err=%v", len(outputs), err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("original changed")
+	}
+	bad := append([]byte{}, tail...)
+	bad[3]++
+	if validJPEGTrailer(bad) {
+		t.Fatal("incorrect trailer length accepted")
+	}
+	second := append(append([]byte{}, tail...), jpegData...)
+	binary.BigEndian.PutUint32(second, uint32(len(second)))
+	if validJPEGTrailer(second) {
+		t.Fatal("second raster accepted")
+	}
+	if validJPEGTrailer(make([]byte, 65537)) {
+		t.Fatal("oversized trailer accepted")
+	}
+}
+
+func TestPublicValidationErrorsAreSanitized(t *testing.T) {
+	for _, tc := range []struct{ diagnostic, code string }{
+		{"image dimensions exceed limits", "image_dimensions"},
+		{"normalize image: unsupported or incompatible ICC profile", "unsupported_color_profile"},
+		{"invalid JPEG end or multiple images", "unsupported_jpeg_structure"},
+		{"decoder failed for /private/secret.jpg; private metadata", "invalid_image"},
+	} {
+		e := PublicValidationError(fmt.Errorf("%s", tc.diagnostic))
+		if e.Code != tc.code || strings.Contains(e.Message, "/private/") || strings.Contains(e.Message, "private metadata") {
+			t.Fatal(e)
+		}
+	}
 }

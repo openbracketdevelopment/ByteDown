@@ -15,7 +15,7 @@ if [[ $# -gt 0 ]]; then
   input="$1"
 else
   input="$RESULTS_DIR/sample.png"
-  base64 --decode "$script_dir/fixture.png.base64" > "$input"
+  base64 --decode < "$script_dir/fixture.png.base64" > "$input"
 fi
 request() {
   local path="$1"

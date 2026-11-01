@@ -77,3 +77,36 @@ crash leftovers and abandoned attempts are reclaimed by age-gated worker
 reconciliation. The deleted idempotency key can subsequently be reused.
 Already-started downloads may finish, and public caches may retain variants for
 the advertised 86,400-second cache lifetime. Originals never become public.
+
+## Optional operator browser client
+
+With `UI_ENABLED=true`, `/` serves the static Svelte client. Configure
+`OPERATOR_PASSWORD_HASH` using `examples/set-operator-password.sh`. Passwords use
+PBKDF2-HMAC-SHA256 (600,000 iterations, random 128-bit salt), implemented with the
+Go standard cryptography library. `POST /ui/login` accepts JSON `password` and
+returns a CSRF token; `GET /ui/session` retrieves that token for a live session;
+`POST /ui/logout` revokes it. Login requires a same-origin Origin header.
+Sessions expire after eight hours and are lost on API restart. The cookie is
+HttpOnly, SameSite=Strict, and Secure under HTTPS. Session mutations require both
+an exact Origin match and `X-CSRF-Token`. No API key is sent to the browser.
+Bearer API clients continue using their existing authentication independently.
+
+`GET /v1/archive?images=<id>,<id>` streams a stored-entry ZIP of all generated
+outputs of the selected completed images; originals are excluded. It requires
+bearer or operator-session authorization. Limits: ten unique image IDs, 160
+entries, 512 MiB uncompressed bytes. Unfinished images return 409; invalid IDs
+return 400; missing files return 404. Files are opened and checked before sending
+headers. A storage failure during streaming can truncate the archive. Entries
+use generated image/output IDs and dimensions, so filenames cannot collide or
+traverse directories. Original upload names are not persisted by the API.
+
+### Camera metadata and validation failures
+
+JPEG supports a recognized OnePlus metadata trailer after EOI (length-prefixed,
+OnePlus signature, maximum 64 KiB, no additional JPEG raster). Originals retain
+that trailer. Arbitrary trailers and multi-picture JPEG remain unsupported.
+Validation errors use fixed safe messages and specific codes such as
+`image_dimensions`, `unsupported_color_profile`, `unsupported_precision`,
+`unsupported_jpeg_structure`, or `invalid_image`. An interrupted validator returns
+503 `validation_unavailable`, rather than classifying a server failure as a bad
+image. No raw decoder diagnostics or metadata are returned to clients.

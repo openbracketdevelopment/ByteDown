@@ -1,3 +1,10 @@
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS frontend
+WORKDIR /web
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run check && npm run build
+
 FROM golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73 AS build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -7,6 +14,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=frontend /web/dist ./web/dist
+RUN go build -o /out/hashpassword ./cmd/hashpassword
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/bytedown ./cmd/bytedown
 RUN mkdir -p /out/licenses \
     && go list -m -f '{{if not .Main}}{{.Path}} {{.Dir}}{{end}}' all \
@@ -26,6 +35,7 @@ RUN apt-get update \
     && groupadd --gid 10001 bytedown \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin bytedown \
     && install -d -o 10001 -g 10001 -m 0700 /data
+COPY --from=build /out/hashpassword /usr/local/bin/hashpassword
 COPY --from=build /out/bytedown /usr/local/bin/bytedown
 COPY --from=build /usr/local/go/LICENSE /usr/share/doc/bytedown/GO-LICENSE
 COPY --from=build /out/licenses /usr/share/doc/bytedown/modules

@@ -325,7 +325,7 @@ func validateJPEG(data []byte) error {
 			continue
 		}
 		if marker == 0xd9 {
-			if !scan || offset != len(data) {
+			if !scan || !validJPEGTrailer(data[offset:]) {
 				return errors.New("invalid JPEG end or multiple images")
 			}
 			if len(profiles) != profileCount {
@@ -374,6 +374,19 @@ func validateJPEG(data []byte) error {
 		offset += length
 	}
 	return errors.New("truncated JPEG")
+}
+
+// Some OnePlus camera exports append a length-prefixed private metadata block
+// after EOI. It is not a second raster. Keep arbitrary trailers and concatenated
+// images rejected; the untouched original retains the recognized camera block.
+func validJPEGTrailer(tail []byte) bool {
+	if len(tail) == 0 {
+		return true
+	}
+	return len(tail) >= 16 && len(tail) <= 64*1024 &&
+		int(binary.BigEndian.Uint32(tail[:4])) == len(tail) &&
+		bytes.HasPrefix(tail[8:], []byte("\xffOnePlus")) &&
+		!bytes.Contains(tail, []byte{0xff, 0xd8})
 }
 
 func load(path string, limits model.Limits) (*vips.ImageRef, model.Input, error) {

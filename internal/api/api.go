@@ -48,6 +48,7 @@ func New(c config.Config, db Database, validate func(context.Context, string) (m
 	m.HandleFunc("GET /health/ready", s.ready)
 	m.HandleFunc("GET /v1/capabilities", s.capabilities)
 	m.HandleFunc("POST /v1/images", s.upload)
+	m.HandleFunc("GET /v1/archive", s.archive)
 	m.HandleFunc("GET /v1/jobs/{id}", s.job)
 	m.HandleFunc("GET /v1/images", s.list)
 	m.HandleFunc("GET /v1/images/{id}", s.image)
@@ -236,7 +237,16 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	input, e := s.validate(r.Context(), tmp)
 	if e != nil {
-		fail(w, 422, "invalid_image", "Image is invalid, unsupported, or exceeds processing limits")
+		var detail *model.ValidationError
+		if errors.As(e, &detail) {
+			status := 422
+			if detail.Code == "validation_unavailable" {
+				status = 503
+			}
+			fail(w, status, detail.Code, detail.Message)
+		} else {
+			fail(w, 422, "invalid_image", "Image is invalid, unsupported, or exceeds processing limits")
+		}
 		return
 	}
 	planned := processing.Planned(input, profile)

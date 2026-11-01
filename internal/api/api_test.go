@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -227,5 +228,69 @@ func TestUploadFilesystemFailureIsUnavailable(t *testing.T) {
 	uploadError(w, &os.PathError{Op: "write", Path: "/private/upload-path", Err: errors.New("disk full")})
 	if w.Code != 503 || strings.Contains(w.Body.String(), "private") || strings.Contains(w.Body.String(), "disk full") {
 		t.Fatalf("invalid storage error: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestArchiveAuthorizationContentsAndLimits(t *testing.T) {
+	h, db, c := setup(t, false)
+	id := strings.Repeat("a", 32)
+	db.image = model.Image{ID: id, Status: "succeeded", Outputs: []model.Output{{ID: "one", Path: "outputs/one", Format: "png", Width: 10}, {ID: "two", Path: "outputs/two", Format: "png", Width: 10}}}
+	for _, o := range db.image.Outputs {
+		if e := os.WriteFile(filepath.Join(c.Root, o.Path), []byte("image bytes"), 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if w := request(h, "GET", "/v1/archive?images="+id, nil, ""); w.Code != 401 {
+		t.Fatal(w.Code)
+	}
+	w := request(h, "GET", "/v1/archive?images="+id, nil, c.APIKey)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	z, e := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(z.File) != 2 || z.File[0].Name == z.File[1].Name {
+		t.Fatal("archive collision")
+	}
+	for _, f := range z.File {
+		if !strings.HasPrefix(f.Name, id+"/") || strings.Contains(f.Name, "..") {
+			t.Fatal("unsafe entry")
+		}
+		r, e := f.Open()
+		if e != nil {
+			t.Fatal(e)
+		}
+		b, e := io.ReadAll(r)
+		r.Close()
+		if e != nil || string(b) != "image bytes" {
+			t.Fatal("wrong archive contents")
+		}
+	}
+	for _, query := range []string{"../path", id + "," + id, strings.Repeat(id+",", 10) + id} {
+		if w := request(h, "GET", "/v1/archive?images="+query, nil, c.APIKey); w.Code != 400 {
+			t.Fatal(w.Code)
+		}
+	}
+	db.image.Status = "processing"
+	if w := request(h, "GET", "/v1/archive?images="+id, nil, c.APIKey); w.Code != 409 {
+		t.Fatal(w.Code)
+	}
+}
+
+func TestActionableValidationResponses(t *testing.T) {
+	for _, tc := range []struct {
+		code   string
+		status int
+	}{{"unsupported_color_profile", 422}, {"validation_unavailable", 503}} {
+		_, db, c := setup(t, false)
+		handler := New(c, db, func(context.Context, string) (model.Input, error) {
+			return model.Input{}, &model.ValidationError{Code: tc.code, Message: "Safe actionable message"}
+		}, func(context.Context) error { return nil })
+		w := uploadRequest(t, handler, c, "image bytes")
+		if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.code) || db.accepted {
+			t.Fatal(w.Code, w.Body.String())
+		}
 	}
 }

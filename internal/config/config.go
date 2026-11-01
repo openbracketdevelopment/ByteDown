@@ -15,6 +15,8 @@ import (
 )
 
 type Config struct {
+	UIEnabled      bool
+	OperatorHash   string
 	DatabaseURL    string
 	APIKey         string
 	Root           string
@@ -39,7 +41,11 @@ func ValidateNativeConcurrency() error {
 }
 
 func Load() (Config, error) {
+	if v := env("UI_ENABLED", "true"); v != "true" && v != "false" {
+		return Config{}, errors.New("UI_ENABLED must be true or false")
+	}
 	c := Config{
+		UIEnabled: env("UI_ENABLED", "true") == "true", OperatorHash: os.Getenv("OPERATOR_PASSWORD_HASH"),
 		DatabaseURL: os.Getenv("DATABASE_URL"), APIKey: os.Getenv("API_KEY"),
 		Root: env("STORAGE_DIR", "/data"), Listen: env("LISTEN_ADDR", ":8080"),
 		Profiles: map[string]model.Profile{"web": {

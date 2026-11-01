@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f7f8f2" />
+    <link rel="icon" href="/logo.svg" />
+    <link rel="stylesheet" href="/docs-assets/reference.css" />
+    <script src="/docs-assets/reference.js" defer></script>
+    <title>ByteDown API — The lighter way to ship images</title>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/"
+        ><img src="/logo.svg" alt="" />ByteDown<span class="pill"
+          >DEVELOPER REFERENCE</span
+        ></a
+      >
+      <nav>
+        <a href="/openapi.yaml">OpenAPI ↗</a><a href="/">Open workshop ↗</a>
+      </nav>
+    </header>
+    <div class="layout">
+      <aside aria-label="Documentation navigation">
+        <h3>GET STARTED</h3>
+        <a href="#overview">Overview</a
+        ><a href="#quickstart">Your first image</a
+        ><a href="#authentication">Authentication</a>
+        <h3>THE API</h3>
+        <a href="#upload">Upload an image</a><a href="#jobs">Track a job</a
+        ><a href="#images">Read results</a
+        ><a href="#downloads">Download files</a
+        ><a href="#archive">Build a ZIP</a><a href="#delete">Delete an image</a>
+        <h3>GOOD TO KNOW</h3>
+        <a href="#profiles">Profiles & limits</a
+        ><a href="#errors">Errors & retries</a
+        ><a href="#operations">Health & retention</a>
+      </aside>
+      <main>
+        <section id="overview" class="hero">
+          <div class="eyebrow">SMALLER FILES. HAPPIER PIPELINES.</div>
+          <h1>Big on possibilities.<br /><em>Light on bytes.</em></h1>
+          <p class="lead">
+            One upload. Web-ready alternatives. Bring ByteDown’s image workshop
+            to your CMS, backend, or publishing pipeline.
+          </p>
+          <div class="tags">
+            <span>REST + JSON</span><span>JPG / PNG in</span
+            ><span>JPG / PNG · WebP · AVIF out</span><span>Self-hosted</span>
+          </div>
+          <p>
+            Upload a static image, follow its background job, then download the
+            formats you need. The API works independently of the web interface.
+            Optimization runs on your ByteDown server.
+          </p>
+          <div class="steps">
+            <div class="step">
+              <b>01 / SEND</b>
+              <h3>Upload once</h3>
+              <p>
+                A multipart image and a named profile. Your untouched original
+                stays available.
+              </p>
+            </div>
+            <div class="step">
+              <b>02 / FOLLOW</b>
+              <h3>Watch the job</h3>
+              <p>
+                Poll for real states and generated-output counts. No invented
+                percentages.
+              </p>
+            </div>
+            <div class="step">
+              <b>03 / SHIP</b>
+              <h3>Pick your formats</h3>
+              <p>
+                Read the manifest and download individual outputs or a streaming
+                ZIP.
+              </p>
+            </div>
+          </div>
+        </section>
+        <section id="quickstart">
+          <div class="eyebrow">A SMALL FIRST STEP</div>
+          <h2>Your first image.</h2>
+          <p>
+            Start your instance, set <code>BYTEDOWN_API_KEY</code> on your
+            backend, and choose a JPG or PNG. Examples use
+            <code>http://127.0.0.1:8080</code>; use your HTTPS instance URL in
+            production.
+          </p>
+          <div class="tabs" role="tablist" aria-label="Upload example language">
+            <button
+              role="tab"
+              aria-selected="true"
+              aria-controls="example-curl"
+              id="tab-curl"
+              data-tab="curl"
+            >
+              cURL</button
+            ><button
+              role="tab"
+              aria-selected="false"
+              aria-controls="example-node"
+              id="tab-node"
+              data-tab="node"
+              tabindex="-1"
+            >
+              Node.js</button
+            ><button
+              role="tab"
+              aria-selected="false"
+              aria-controls="example-python"
+              id="tab-python"
+              data-tab="python"
+              tabindex="-1"
+            >
+              Python
+            </button>
+          </div>
+          <div role="tabpanel" id="example-curl" aria-labelledby="tab-curl">
+            <div class="code">
+              <button class="copy" aria-label="Copy cURL example">Copy</button>
+              <pre><code>curl --fail-with-body \
+  -H "Authorization: Bearer $BYTEDOWN_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -F 'file=@photo.jpg' \
+  -F 'profile=web' \
+  http://127.0.0.1:8080/v1/images</code></pre>
+            </div>
+          </div>
+          <div
+            role="tabpanel"
+            id="example-node"
+            aria-labelledby="tab-node"
+            hidden
+          >
+            <div class="code">
+              <button class="copy" aria-label="Copy Node.js example">
+                Copy
+              </button>
+              <pre><code>// Node.js 22+ · trusted server code only
+import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+
+const body = new FormData();
+body.append('file', new Blob([await readFile('photo.jpg')]), 'photo.jpg');
+body.append('profile', 'web');
+const submissionKey = randomUUID(); // retain for retries of this submission
+const response = await fetch('http://127.0.0.1:8080/v1/images', {
+  method: 'POST', body,
+  headers: {
+    Authorization: `Bearer ${process.env.BYTEDOWN_API_KEY}`,
+    'Idempotency-Key': submissionKey,
+  },
+});
+if (!response.ok) throw new Error(await response.text());
+console.log(await response.json());</code></pre>
+            </div>
+          </div>
+          <div
+            role="tabpanel"
+            id="example-python"
+            aria-labelledby="tab-python"
+            hidden
+          >
+            <div class="code">
+              <button class="copy" aria-label="Copy Python example">
+                Copy
+              </button>
+              <pre><code># Python 3 · pip install requests · trusted server only
+import os, uuid, requests
+
+submission_key = str(uuid.uuid4())  # retain for ambiguous retries
+with open('photo.jpg', 'rb') as image:
+    response = requests.post(
+        'http://127.0.0.1:8080/v1/images',
+        headers={
+            'Authorization': 'Bearer ' + os.environ['BYTEDOWN_API_KEY'],
+            'Idempotency-Key': submission_key,
+        },
+        files={'file': ('photo.jpg', image, 'image/jpeg')},
+        data={'profile': 'web'}, timeout=150,
+    )
+response.raise_for_status()
+print(response.json())</code></pre>
+            </div>
+          </div>
+          <p class="subtle">
+            A successful upload returns HTTP 202 with <code>image_id</code>,
+            <code>job_id</code>, and <code>status_url</code>. Reusing an
+            identical submission’s idempotency key returns the existing IDs.
+          </p>
+          <div class="code">
+            <button class="copy" aria-label="Copy job polling example">
+              Copy
+            </button>
+            <pre><code># Replace JOB_ID with the job_id returned by your upload.
+curl --fail-with-body \
+  -H "Authorization: Bearer $BYTEDOWN_API_KEY" \
+  http://127.0.0.1:8080/v1/jobs/JOB_ID
+
+# When status is succeeded, retrieve the output manifest.
+curl --fail-with-body \
+  -H "Authorization: Bearer $BYTEDOWN_API_KEY" \
+  http://127.0.0.1:8080/v1/images/IMAGE_ID</code></pre>
+          </div>
+          <div class="callout">
+            Poll about every two seconds, back off after network failures, and
+            stop on <code>succeeded</code> or <code>failed</code>. Upload
+            acceptance is not processing completion.
+          </div>
+        </section>
+        <section id="authentication">
+          <div class="eyebrow">KEYS STAY BACKSTAGE</div>
+          <h2>Authentication.</h2>
+          <p>
+            Send <code>Authorization: Bearer YOUR_API_KEY</code> on protected
+            requests. Keep the key in your server’s secret configuration. Never
+            put it in a frontend bundle, browser storage, public environment
+            variable, or download URL.
+          </p>
+          <div class="panel">
+            <h3>Browser workshop</h3>
+            <p>
+              The built-in interface uses a separate operator password and an
+              HttpOnly, SameSite=Strict session cookie. Sessions last eight
+              hours and reset when the API restarts. Mutations require an exact
+              Origin match and an <code>X-CSRF-Token</code> retrieved from
+              <code>GET /ui/session</code>.
+            </p>
+            <p class="subtle">
+              This is a single-operator service. There is no registration or
+              tenant-level access control.
+            </p>
+          </div>
+          <p>
+            Originals always require authorization. Variants require
+            authorization by default; <code>PUBLIC_VARIANTS=true</code> makes
+            only generated media public. CORS is disabled by default.
+          </p>
+        </section>
+        <section id="upload">
+          <div class="endpoint">
+            <span class="method post">POST</span><code>/v1/images</code
+            ><a href="/openapi.yaml">Schema ↗</a>
+          </div>
+          <h2>A new beginning for your image.</h2>
+          <p>
+            Send <code>multipart/form-data</code> with exactly one
+            <code>file</code> and an optional <code>profile</code> (default
+            <code>web</code>). File contents are validated in an isolated native
+            child before a job is accepted. Uploading does not synchronously
+            encode outputs.
+          </p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Field</th>
+                  <th>Type</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>file</code></td>
+                  <td>Binary · required</td>
+                  <td>
+                    One static JPEG or PNG. The extension alone is not trusted.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>profile</code></td>
+                  <td>String</td>
+                  <td>
+                    A configured profile name from capabilities. Defaults to
+                    <code>web</code>.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>Idempotency-Key</code></td>
+                  <td>Header · optional</td>
+                  <td>
+                    At most 200 bytes; no surrounding whitespace. Keep the same
+                    value when retrying an ambiguous upload.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Identical content and resolved profile with the same key returns the
+            existing submission. A conflicting reuse returns 409. Separate
+            submissions are not automatically deduplicated by content hash.
+          </p>
+        </section>
+        <section id="jobs">
+          <div class="endpoint">
+            <span class="method">GET</span><code>/v1/jobs/{job_id}</code>
+          </div>
+          <h2>Progress without the guesswork.</h2>
+          <div class="status-line">
+            <span>queued</span> → <span>processing</span> →
+            <span>succeeded / failed</span>
+          </div>
+          <p>
+            <code>generated</code> and <code>planned</code> count actual
+            outputs; <code>duration_ms</code> measures processing time, not time
+            waiting in the queue. Progress can reset on a worker retry. Partial
+            outputs remain unpublished until the whole job succeeds.
+          </p>
+          <p>
+            Failed jobs include sanitized <code>error_code</code> and
+            <code>error_message</code>. An identical idempotent upload returns
+            that same failed job; it does not restart processing. To
+            deliberately submit again after correcting a problem, use a new
+            submission key.
+          </p>
+        </section>
+        <section id="images">
+          <div class="endpoint">
+            <span class="method">GET</span><code>/v1/images/{image_id}</code>
+          </div>
+          <h2>Meet the alternatives.</h2>
+          <p>
+            The manifest is the source of truth: original dimensions, encoded
+            dimensions, bytes, <code>original_url</code>, and an
+            <code>outputs</code> array with format, width, height, bytes, and
+            URL.
+          </p>
+          <div class="callout">
+            A smaller file is a result, not a promise. Positive
+            <code>size_difference_percent</code> means a reduction; negative
+            means growth. <code>includes_resizing</code> indicates that
+            dimension changes contributed. Different formats are alternatives—do
+            not add their savings together.
+          </div>
+          <div class="panel">
+            <div class="endpoint">
+              <span class="method">GET</span
+              ><code>/v1/images?limit=50&amp;offset=0</code>
+            </div>
+            <p>
+              List stored images. <code>limit</code>: 1–100;
+              <code>offset</code>: 0–1,000,000. Optional
+              <code>status</code> filters by a job state. Response:
+              <code>images</code>, <code>limit</code>, <code>offset</code>.
+              Offset pagination can shift while images are added or removed.
+            </p>
+          </div>
+        </section>
+        <section id="downloads">
+          <h2>Ready when you are.</h2>
+          <div class="panel">
+            <div class="endpoint">
+              <span class="method">GET</span><code>/media/{output_id}</code>
+            </div>
+            <p>Download a completed generated output using its manifest URL.</p>
+            <div class="endpoint">
+              <span class="method">GET</span
+              ><code>/v1/images/{image_id}/original</code>
+            </div>
+            <p>
+              Download the untouched original, byte for byte. Its encoded
+              dimensions can differ from orientation-normalized display
+              dimensions.
+            </p>
+          </div>
+          <div class="code">
+            <button class="copy" aria-label="Copy download example">
+              Copy
+            </button>
+            <pre><code># Use an output URL from the manifest; do not construct output IDs.
+curl --fail-with-body \
+  -H "Authorization: Bearer $BYTEDOWN_API_KEY" \
+  http://127.0.0.1:8080/media/OUTPUT_ID \
+  --output photo.webp</code></pre>
+          </div>
+        </section>
+        <section id="archive">
+          <div class="endpoint">
+            <span class="method">GET</span
+            ><code>/v1/archive?images=IMAGE_ID,IMAGE_ID</code>
+          </div>
+          <h2>The whole set, neatly packed.</h2>
+          <p>
+            Stream a ZIP of generated outputs from completed images. Originals
+            are excluded; responsive sizes are included. Entries use
+            image-specific folders and output IDs to avoid collisions. The
+            server accepts IDs only, never filesystem paths.
+          </p>
+          <div class="tags">
+            <span>10 unique images</span><span>160 files maximum</span
+            ><span>512 MiB maximum</span><span>Stored ZIP entries</span>
+          </div>
+          <p class="subtle">
+            Incomplete images return 409. Missing outputs return 404. A storage
+            or network failure after streaming begins can leave a truncated
+            archive; retry the download.
+          </p>
+        </section>
+        <section id="delete">
+          <div class="endpoint">
+            <span class="method delete">DELETE</span
+            ><code>/v1/images/{image_id}</code>
+          </div>
+          <h2>A clean slate.</h2>
+          <p>
+            Deletes the image, job, output references, and idempotency record.
+            Returns 204. Active worker publication is invalidated so a deleted
+            image cannot reappear when processing finishes. Stored files are
+            removed best-effort; the worker reconciles orphaned files.
+          </p>
+          <div class="callout">
+            Deletion is permanent. Already-started downloads may finish, and
+            public caches can retain variants for their advertised 86,400-second
+            lifetime. Clearing an item from the workshop view does not delete it
+            from the server.
+          </div>
+        </section>
+        <section id="profiles">
+          <div class="endpoint">
+            <span class="method">GET</span><code>/v1/capabilities</code>
+          </div>
+          <h2>Your instance sets the limits.</h2>
+          <p>
+            Read resolved <code>profiles</code>, encoder availability,
+            service/pipeline versions, <code>limits</code>, and
+            <code>public_variants</code>. Treat these as authoritative rather
+            than hard-coding the defaults below.
+          </p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Default</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Upload size</td>
+                  <td>20 MiB per image</td>
+                </tr>
+                <tr>
+                  <td>Decoded image</td>
+                  <td>40 million pixels; 20,000 px per dimension</td>
+                </tr>
+                <tr>
+                  <td>Generated outputs</td>
+                  <td>16 files; 100 MiB total per image</td>
+                </tr>
+                <tr>
+                  <td>Processing timeout</td>
+                  <td>120 seconds</td>
+                </tr>
+                <tr>
+                  <td>Built-in <code>web</code> profile</td>
+                  <td>
+                    480, 960, 1440, 1920 px widths plus source width; WebP and
+                    AVIF; an optimized source-format copy
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            No upscaling. Widths larger than the source are skipped. Profiles
+            are snapshotted when the job is accepted. A OnePlus length-prefixed
+            metadata trailer is accepted for JPEG; arbitrary trailing data and
+            multi-picture JPEG are rejected. Animation, 16-bit/HDR PNG, SVG,
+            GIF, remote URLs, PDF, and video are unsupported.
+          </p>
+        </section>
+        <section id="errors">
+          <h2>Errors with a way forward.</h2>
+          <p>API errors use the same envelope:</p>
+          <pre><code>{ "error": { "code": "invalid_image", "message": "…" } }</code></pre>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>HTTP</th>
+                  <th>Meaning</th>
+                  <th>Next step</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>400</td>
+                  <td>Invalid multipart, field, profile, pagination, or ID</td>
+                  <td>Correct the request.</td>
+                </tr>
+                <tr>
+                  <td>401 / 403</td>
+                  <td>Authentication / browser CSRF failure</td>
+                  <td>
+                    Check the bearer key or sign in again; browser mutations
+                    need a matching Origin and CSRF token.
+                  </td>
+                </tr>
+                <tr>
+                  <td>404</td>
+                  <td>Missing or deleted resource</td>
+                  <td>Refresh the manifest; the file may have been deleted.</td>
+                </tr>
+                <tr>
+                  <td>409</td>
+                  <td>Idempotency conflict or incomplete ZIP selection</td>
+                  <td>
+                    Use the original submission parameters or wait for
+                    completion.
+                  </td>
+                </tr>
+                <tr>
+                  <td>413</td>
+                  <td>Upload or archive exceeds a byte/count limit</td>
+                  <td>Reduce the file size or archive selection.</td>
+                </tr>
+                <tr>
+                  <td>422</td>
+                  <td>
+                    Invalid image, unsupported structure/color/precision,
+                    dimension limit, or excessive planned outputs
+                  </td>
+                  <td>
+                    Read the message; re-export a static 8-bit sRGB image,
+                    resize it, or select a smaller profile.
+                  </td>
+                </tr>
+                <tr>
+                  <td>429 / 503</td>
+                  <td>
+                    Login rate limit, busy validation slots, or temporary
+                    service failure
+                  </td>
+                  <td>
+                    Back off and retry. Keep the same upload key after an
+                    ambiguous failure.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Do not blindly retry a permanent validation error with the same
+            file. If a browser request is interrupted after upload, the server
+            may already have accepted it; retry the same file/profile with the
+            original idempotency key.
+          </p>
+        </section>
+        <section id="operations">
+          <h2>Know what stays.</h2>
+          <div class="panel">
+            <div class="endpoint">
+              <span class="method">GET</span><code>/health/live</code>
+            </div>
+            <p>Unauthenticated process liveness.</p>
+            <div class="endpoint">
+              <span class="method">GET</span><code>/health/ready</code>
+            </div>
+            <p>
+              Unauthenticated readiness: database and writable storage access
+              plus the startup encoder probe result.
+            </p>
+          </div>
+          <p>
+            Images are processed on your instance and retained until explicitly
+            deleted. There is no automatic expiry. Use HTTPS, keep keys
+            server-side, back up database and image storage together, and
+            monitor worker health.
+          </p>
+          <p class="subtle">
+            Need only the API? Set <code>UI_ENABLED=false</code>. Bearer
+            endpoints keep working. Public multiuser deployments require
+            additional isolation, quotas, rate limits, and retention controls.
+          </p>
+        </section>
+      </main>
+    </div>
+    <footer>
+      <span>ByteDown · Smaller files. More possibilities.</span
+      ><a href="/openapi.yaml">Download the OpenAPI contract ↗</a>
+    </footer>
+    <div id="copy-status" role="status" aria-live="polite"></div>
+  </body>
+</html>

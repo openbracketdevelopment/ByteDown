@@ -12,6 +12,111 @@ larger than its input. Quality numbers are codec-specific, and resizing is
 reported separately from same-size compression. No universal savings or
 production-readiness claim is made.
 
+## API reference
+
+Open **http://127.0.0.1:8080/api-docs** for the browsable developer reference,
+with keyboard-accessible cURL/Node/Python examples, copy buttons, endpoint details,
+authentication, limits, and error guidance. `/openapi.yaml` remains the downloadable
+machine-readable contract. Both are served locally without third-party scripts.
+The refined **Byte Fold** logo combines a folded lowercase b and a negative-space
+down arrow; its source is `web/public/logo.svg`.
+
+JPEG exports with a recognized, length-prefixed OnePlus metadata trailer are
+supported. Arbitrary trailing bytes and multi-picture JPEG remain rejected; the
+original camera file is retained byte-for-byte. Validation failures now report
+safe, actionable reasons for dimension, color, precision, and structural problems.
+
+## Web interface
+
+ByteDown includes a Svelte/TypeScript image workshop and an original SVG logo:
+two image tiles form a **B** with a downward arrow. The Go API serves the compiled
+assets; production requires no Node server. All optimization stays in Go/libvips,
+and existing bearer API clients work independently of the interface.
+
+For a new installation, create credentials once (do not overwrite an existing `.env`):
+
+```bash
+(umask 077; printf 'POSTGRES_PASSWORD=%s\nAPI_KEY=%s\n' \
+  "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env)
+docker build -t bytedown:local .
+bash examples/set-operator-password.sh
+docker compose up --build --wait --wait-timeout 240 api
+docker compose up -d worker
+```
+
+Open **http://127.0.0.1:8080** and enter the operator password. For an existing
+installation, keep `.env`, build the image, run the password setup script, and
+start API/worker with the commands above. The script prompts invisibly, hashes
+the password in the container, and writes a single-quoted hash to `.env` so Compose
+preserves its dollar signs. It requires Bash and Docker. Passwords must have at
+least twelve characters. There is no registration or password recovery; rerun
+the setup script to change the password, then recreate the API container.
+
+The UI accepts up to ten JPG/PNG files and uploads two at a time. Limits come
+from `/v1/capabilities` (default 20 MiB, 40 megapixels, 20,000 pixels per dimension).
+Server validation rejects corrupt, animated, or unsupported inputs individually.
+Select files, then click **Optimize pending**. Job progress reports actual output
+counts. Primary cards compare matching source dimensions; **More sizes** contains
+responsive variants. Missing outputs and size increases are shown explicitly.
+Previews load on demand, preserve aspect ratio, and show a transparency grid.
+The source remains available separately as **Untouched original**.
+
+Individual downloads use the operator cookie. ZIPs contain all generated outputs
+for completed selected images, including responsive sizes, but never originals.
+Archives stream from the server with limits of ten images, 160 entries and
+512 MiB. ID-based folders and output IDs avoid collisions; the backend does not
+persist uploaded filenames, so ZIP names use IDs and dimensions. Browser individual
+downloads use the local filename when available.
+
+**Files remain on this server until explicitly deleted.** Clear finished removes
+items only from the browser view. Delete from server requires confirmation and
+uses the existing deletion API, including active-job publication protection.
+There is no automatic expiry. Recent job identifiers and display filenames are
+kept in sessionStorage; credentials are never stored there. Unsubmitted files
+cannot be restored after a reload. Interrupted uploads can be retried with their
+original idempotency key while the selected File is still available.
+
+Operator sessions use HttpOnly, SameSite=Strict cookies and CSRF tokens; they
+expire after eight hours or an API restart. HTTPS sets Secure cookies. At a TLS
+reverse proxy, preserve Host and **overwrite** X-Forwarded-Proto with the actual
+scheme; keep the API's upstream port private. Session state is in memory, so run
+one API instance or use sticky sessions. Login attempts are globally limited to
+one per second, with at most 128 active sessions. The administrative bearer key
+stays server-side. `PUBLIC_VARIANTS` retains its existing meaning; originals stay
+private. A public multiuser demo needs additional quotas, isolation, per-client
+rate limits, and retention controls.
+
+Set `UI_ENABLED=false` in `.env` and recreate the API to disable all browser UI
+and session routes while preserving the headless API. `API_PORT` optionally
+changes the host port (default 8080).
+
+Frontend development (Node 22.15+):
+
+```bash
+cd web
+npm ci
+npm run dev       # http://127.0.0.1:5173; proxies API/session requests to :8080
+npm run check
+npm test
+npm run build
+```
+
+Run the Docker API/worker alongside the Vite development server. Its proxy
+rewrites Host/Origin consistently for the backend's same-origin checks. Static
+assets are embedded at Go build time: for a native build, run `npm run build` in
+`web/` first, then `go build ./cmd/bytedown`. Optional build-time
+`VITE_BATCH_LIMIT=1..10` and `VITE_UPLOAD_CONCURRENCY=1..2` lower client batch/upload
+limits. Docker builds the frontend automatically. Run full isolated acceptance
+checks without disturbing an existing instance using:
+
+```bash
+BYTEDOWN_TEST_PORT=18089 bash examples/test-live.sh
+```
+
+This runs Go/native/database tests, checks browser sessions/CSRF and ZIPs, and
+exercises the bearer API independently. Only its disposable Compose project's
+volumes are removed. `node examples/test-examples.mjs` checks example contracts.
+
 ## Start locally
 
 Requires Docker Engine with Compose v2, OpenSSL, and Bash. The demo also needs
@@ -120,6 +225,7 @@ native child uses `VIPS_CONCURRENCY`; account for both multipliers when sizing.
 
 ## Development and verification
 
+For native development, build the frontend with `cd web && npm ci && npm run build` first.
 Go `1.25` with CGO, a C compiler, `pkg-config`, and **libvips ≥8.14** are needed.
 govips `v2.20.0`'s [pinned go.mod][govips-module] requires Go 1.25.0; its
 [README requirements][govips] still list an older Go minimum. The module

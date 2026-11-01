@@ -9,6 +9,26 @@ info:
 security:
   - bearerKey: []
 paths:
+  /v1/archive:
+    get:
+      summary: Download generated outputs for completed images as a streaming ZIP
+      parameters:
+        - in: query
+          name: images
+          required: true
+          description: One to ten unique comma-separated image IDs. At most 160 files and 512 MiB.
+          schema: {type: string, maxLength: 329}
+      responses:
+        '200':
+          description: Generated outputs only, grouped by image ID; originals excluded
+          content:
+            application/zip:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
   /health/live:
     get:
       security: []

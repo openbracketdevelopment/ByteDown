@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/openbracketdevelopment/ByteDown/internal/api"
+	"github.com/openbracketdevelopment/ByteDown/internal/browser"
 	"github.com/openbracketdevelopment/ByteDown/internal/config"
 	"github.com/openbracketdevelopment/ByteDown/internal/model"
 	"github.com/openbracketdevelopment/ByteDown/internal/processing"
@@ -90,10 +91,11 @@ func run() error {
 		}
 		if command == "validate" {
 			in, e := processing.Validate(task.InputPath, task.Limits)
+			result := model.ValidationResult{Input: in}
 			if e != nil {
-				return e
+				result.Error = processing.PublicValidationError(e)
 			}
-			return json.NewEncoder(os.Stdout).Encode(in)
+			return json.NewEncoder(os.Stdout).Encode(result)
 		}
 		out, e := processing.Process(task)
 		if e != nil {
@@ -138,14 +140,20 @@ func run() error {
 	validate := func(ctx context.Context, path string) (model.Input, error) {
 		ctx, cancel := context.WithTimeout(ctx, c.Limits.Duration)
 		defer cancel()
-		var input model.Input
-		e := child(ctx, executable, "validate", model.Task{InputPath: path, Limits: c.Limits}, &input)
-		return input, e
+		var result model.ValidationResult
+		e := child(ctx, executable, "validate", model.Task{InputPath: path, Limits: c.Limits}, &result)
+		if e != nil {
+			return model.Input{}, &model.ValidationError{Code: "validation_unavailable", Message: "Image validation could not finish. Please retry; the server may be busy."}
+		}
+		if result.Error != nil {
+			return model.Input{}, result.Error
+		}
+		return result.Input, nil
 	}
 	// Encoder capabilities belong to this immutable executable/system image.
 	// Startup performs the real smoke test; readiness reuses that result.
 	probe := func(ctx context.Context) error { return nil }
-	server := &http.Server{Addr: c.Listen, Handler: api.New(c, db, validate, probe),
+	server := &http.Server{Addr: c.Listen, Handler: browser.Wrap(c, api.New(c, db, validate, probe)),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: c.Limits.Duration + 30*time.Second,
 		WriteTimeout: c.Limits.Duration + 30*time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	done := make(chan error, 1)

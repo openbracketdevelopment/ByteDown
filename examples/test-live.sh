@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Creates and destroys only its uniquely named disposable Compose project.
 set -euo pipefail
-for tool in docker curl jq base64 file cmp openssl; do
+for tool in docker curl jq base64 file cmp openssl unzip; do
   command -v "$tool" >/dev/null || { echo "Missing tool: $tool" >&2; exit 1; }
 done
 project="bytedown-livecheck-$$"
 export API_KEY="$(openssl rand -hex 32)" POSTGRES_PASSWORD="$(openssl rand -hex 32)"
 export PUBLIC_VARIANTS=false PROFILES_JSON= MAX_OUTPUT_BYTES=104857600 PROCESS_TIMEOUT=120s
 export RESULTS_DIR="${RESULTS_DIR:-examples/live-results}"
-export BASE_URL=http://127.0.0.1:8080
+export API_PORT="${BYTEDOWN_TEST_PORT:-8080}"
+export BASE_URL="http://127.0.0.1:$API_PORT"
 authorization="$(printf '%s %s' Bearer "$API_KEY")"
 mkdir -p "$RESULTS_DIR"
 chmod 700 "$RESULTS_DIR"
@@ -36,6 +37,8 @@ if [[ "${SKIP_GO_CHECKS:-false}" != true ]]; then
 fi
 compose build --quiet
 docker run --rm bytedown:local probe
+export OPERATOR_PASSWORD_HASH="$(printf %s bytedown-test-password | docker run --rm -i --entrypoint hashpassword bytedown:local)"
+export UI_ENABLED=true
 compose up -d --wait --wait-timeout 90 api
 index_present="$(compose exec -T db psql -U bytedown -d bytedown -tAc \
   "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'outputs_attempt_token')")"
@@ -44,11 +47,18 @@ compose up -d worker
 compose ps -a > "$RESULTS_DIR/compose-status.txt"
 docker image inspect bytedown:local --format '{{.Id}} uid={{.Config.User}}' > "$RESULTS_DIR/image.txt"
 curl --silent --show-error --fail "$BASE_URL/health/ready" > "$RESULTS_DIR/readiness.json"
+# Session login never sends the bearer API key to the browser.
+curl --silent --show-error --fail "$BASE_URL/" > "$RESULTS_DIR/index.html"
+curl --silent --show-error --fail -c "$RESULTS_DIR/cookies" -H "Origin: $BASE_URL" -H 'Content-Type: application/json' -d '{"password":"bytedown-test-password"}' "$BASE_URL/ui/login" > "$RESULTS_DIR/session.json"
+csrf="$(jq -er .csrf "$RESULTS_DIR/session.json")"
+curl --silent --show-error --fail -b "$RESULTS_DIR/cookies" "$BASE_URL/v1/capabilities" > "$RESULTS_DIR/session-capabilities.json"
+code="$(curl --silent --output /dev/null --write-out '%{http_code}' -b "$RESULTS_DIR/cookies" -X DELETE "$BASE_URL/v1/images/invalid")"
+[[ "$code" == 403 ]] || { echo "Missing CSRF token was not rejected" >&2; exit 1; }
 code="$(curl --silent --output /dev/null --write-out '%{http_code}' "$BASE_URL/v1/images")"
 [[ "$code" == 401 ]] || { echo "Unauthenticated management endpoint was not rejected" >&2; exit 1; }
 root_results="$RESULTS_DIR"
 for format in png jpg; do
-  base64 --decode "examples/fixture.$format.base64" > "$root_results/input.$format"
+  base64 --decode < "examples/fixture.$format.base64" > "$root_results/input.$format"
   RESULTS_DIR="$root_results/$format" bash examples/demo.sh "$root_results/input.$format"
   jq -e '.status == "succeeded" and .generated == .planned and .duration_ms >= 0' \
     "$root_results/$format/job.json" >/dev/null
@@ -58,6 +68,9 @@ for format in png jpg; do
     grep -Eiq '^cache-control:[[:space:]]*private,' "$headers"
   done
   image_id="$(jq -er .id "$manifest")"
+  curl --silent --show-error --fail -b "$RESULTS_DIR/cookies" "$BASE_URL/v1/archive?images=$image_id" > "$root_results/$format/generated.zip"
+  unzip -t "$root_results/$format/generated.zip" > "$root_results/$format/zip-check.txt"
+
   variant_url="$(jq -er '.outputs[0].url' "$manifest")"
   code="$(curl --silent --output /dev/null --write-out '%{http_code}' "$BASE_URL$variant_url")"
   [[ "$code" == 401 ]] || { echo "Default variant was not private" >&2; exit 1; }

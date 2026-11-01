@@ -33,3 +33,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+examples/results/
+
+examples/live-results/

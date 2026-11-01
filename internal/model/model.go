@@ -78,3 +78,16 @@ type Task struct {
 	Profile   Profile `json:"profile"`
 	Limits    Limits  `json:"limits"`
 }
+
+// ValidationResult crosses the isolated validator boundary without forwarding
+// decoder diagnostics, paths, or user-controlled metadata to HTTP responses.
+type ValidationResult struct {
+	Input Input            `json:"input"`
+	Error *ValidationError `json:"error,omitempty"`
+}
+type ValidationError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func (e *ValidationError) Error() string { return e.Message }
